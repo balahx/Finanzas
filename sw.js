@@ -1,6 +1,6 @@
 /* Service worker: permite usar la app sin conexión.
    Estrategia: red primero (así ves las actualizaciones), con respaldo en caché. */
-const CACHE = 'finanzas-v3';
+const CACHE = 'finanzas-v4';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './sync.js', './firebase-config.js', './manifest.webmanifest', './icon.svg', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -12,7 +12,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   const u = new URL(req.url);
-  const ok = u.origin === self.location.origin || (u.hostname === 'www.gstatic.com' && u.pathname.startsWith('/firebasejs/')); // SDK de Firebase
+  const ok = u.origin === self.location.origin || (u.hostname === 'www.gstatic.com' && u.pathname.startsWith('/firebasejs/')) // SDK de Firebase
+    || u.hostname === 'fonts.googleapis.com' || u.hostname === 'fonts.gstatic.com'; // tipografías
   if (req.method !== 'GET' || !ok) return;
   e.respondWith(
     fetch(req).then(res => {

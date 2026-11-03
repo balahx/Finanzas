@@ -153,7 +153,23 @@ function sums(list) {
   }
   return { inc, exp, bal: inc - exp, byCat };
 }
-const catById = id => state.categories.find(c => c.id === id) || { name: 'Sin categoría', emoji: '❔' };
+/* ---------- Íconos de trazo y monogramas (sin emojis en la interfaz) ---------- */
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"${extra}>${d}</svg>`;
+const ICON = {
+  home: svg('<path d="M4 11 L12 4 L20 11 V20 H14 V14 H10 V20 H4 Z"/>'),
+  gastos: svg('<path d="M6 3 H18 V21 L15 19 L12 21 L9 19 L6 21 Z"/><path d="M9 8 H15 M9 12 H15"/>'),
+  presupuesto: svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>'),
+  metas: svg('<path d="M6 21 V4"/><path d="M6 5 H18 L15 9 L18 13 H6"/>'),
+  deudas: svg('<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M3 10.5 H21"/><path d="M7 15 H10"/>'),
+  inversiones: svg('<path d="M4 17 L10 11 L14 15 L20 7"/><path d="M15 7 H20 V12"/>'),
+  anual: svg('<path d="M5 20 V11 M12 20 V5 M19 20 V14"/>'),
+  ajustes: svg('<path d="M4 7 H20 M4 17 H20"/><circle cx="9" cy="7" r="2.5" fill="currentColor"/><circle cx="15" cy="17" r="2.5" fill="currentColor"/>'),
+  mas: svg('<path d="M4 7 H20 M4 12 H20 M4 17 H20"/>')
+};
+// Símbolo "Órbita + Sigma" (versión para fondo burdeos)
+const LOGO = s => `<svg width="${s}" height="${s}" viewBox="-6 -6 112 112" aria-hidden="true"><circle cx="50" cy="50" r="40" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-dasharray="190 61" transform="rotate(-40 50 50)"/><circle cx="54.18" cy="10.22" r="7.5" fill="#D9B26F"/><path d="M64 34 H36 L52 50 L36 66 H64" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-linejoin="miter"/></svg>`;
+const mono = (c, sm) => `<span class="mono${sm ? ' sm' : ''}" aria-hidden="true">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</span>`;
+const catById = id => state.categories.find(c => c.id === id) || { name: 'Sin categoría', emoji: '' };
 const debtRemaining = d => Math.max(0, d.total - sum(d.payments, p => p.amount));
 const goalSaved = g => sum(g.contributions, c => c.amount);
 const invGain = i => i.current - i.invested;
@@ -185,8 +201,7 @@ const card = (title, body, extra = '') => `<section class="card">${title ? `<div
 const emptyMsg = msg => `<p class="empty">${msg}</p>`;
 const budgetCls = pct => (pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '');
 function head(title, sub = '', right = '') {
-  const gear = currentRoute() !== 'ajustes' ? '<a class="icon-btn only-mobile" href="#/ajustes" aria-label="Ajustes">⚙️</a>' : '';
-  return `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="head-right">${right}${gear}</div></header>`;
+  return `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="head-right">${right}</div></header>`;
 }
 function segmented(mode) {
   return `<div class="seg" role="group" aria-label="Tipo de periodo">${[['week', 'Semana'], ['fortnight', 'Quincena'], ['month', 'Mes']]
@@ -300,7 +315,7 @@ function viewHome() {
       <div class="stat"><small>Ingresos</small><b class="pos">${money(sp.inc)}</b></div>
       <div class="stat"><small>Balance</small><b class="${sp.bal < 0 ? 'neg' : 'pos'}">${money(sp.bal)}</b></div>
     </div>
-    ${topCats.length ? `<div style="margin-top:10px">${topCats.map(([id, v]) => `<div class="catrow"><div class="top"><span>${catById(id).emoji} ${esc(catById(id).name)}</span><b>${money(v)}</b></div>${bar(sp.exp ? v / sp.exp * 100 : 0)}</div>`).join('')}</div>` : emptyMsg('Sin gastos en este periodo.')}`,
+    ${topCats.length ? `<div style="margin-top:10px">${topCats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><b>${money(v)}</b></div>${bar(sp.exp ? v / sp.exp * 100 : 0)}</div>`).join('')}</div>` : emptyMsg('Sin gastos en este periodo.')}`,
     '<a class="link" href="#/gastos">Ver detalle</a>');
 
   const c3 = budTotal > 0 ? card('Presupuesto del mes', `
@@ -311,7 +326,7 @@ function viewHome() {
 
   const c4 = card('Próximos vencimientos', dues.length ? dues.map(({ d, n }) => {
     const info = dueInfo(d);
-    return `<div class="row" style="cursor:default"><span class="emo">💳</span><span class="grow"><b>${esc(d.name)}</b><small>${n < 0 ? 'Venció' : 'Vence'} ${fmtDate(d.nextDue)}</small></span><span style="text-align:right"><b>${money(d.installment || debtRemaining(d))}</b><br><span class="badge ${info.cls}">${esc(info.text)}</span></span></div>`;
+    return `<div class="row" style="cursor:default"><span class="emo">${ICON.deudas}</span><span class="grow"><b>${esc(d.name)}</b><small>${n < 0 ? 'Venció' : 'Vence'} ${fmtDate(d.nextDue)}</small></span><span style="text-align:right"><b>${money(d.installment || debtRemaining(d))}</b><br><span class="badge ${info.cls}">${esc(info.text)}</span></span></div>`;
   }).join('') : emptyMsg('No hay vencimientos en los próximos 30 días.'), '<a class="link" href="#/deudas">Deudas</a>');
 
   const c5 = card('Metas de ahorro', goals.length ? goals.map(g => {
@@ -334,7 +349,7 @@ function viewHome() {
       <div class="stat"><small>Ahorro neto</small><b class="${yd.net < 0 ? 'neg' : 'pos'}">${money(yd.net)}</b></div>
     </div>` : emptyMsg('Aún no hay movimientos este año.'), '<a class="link" href="#/anual">Ver año</a>');
   const nm = state.profile ? esc(state.profile.name) : '';
-  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy') + c1 + c2 + c3 + cY + c4 + c5 + c6;
+  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + c2 + c3 + cY + c4 + c5 + c6;
 }
 
 /* ----- Gastos ----- */
@@ -359,7 +374,7 @@ function viewTx() {
 
   const txRow = t => {
     const c = catById(t.categoryId), inc = t.type === 'income';
-    return `<button class="row" data-act="editTx" data-id="${t.id}"><span class="emo">${c.emoji}</span><span class="grow"><b>${esc(t.note || c.name)}</b><small>${esc(c.name)}</small></span><span class="amt ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${money(t.amount)}</span></button>`;
+    return `<button class="row" data-act="editTx" data-id="${t.id}"><span class="emo">${mono(c)}</span><span class="grow"><b>${esc(t.note || c.name)}</b><small>${esc(c.name)}</small></span><span class="amt ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${money(t.amount)}</span></button>`;
   };
 
   return head('Gastos', `Vista ${MODE_NAMES[mode]}`) +
@@ -377,7 +392,7 @@ function viewTx() {
         <div class="stat"><small>Balance</small><b class="${s.bal < 0 ? 'neg' : 'pos'}">${money(s.bal)}</b></div>
       </div>
       <p class="muted small" style="margin-top:8px">Promedio diario de gasto: <b>${money(s.exp / elapsed)}</b></p>
-      ${cats.length ? `<div style="margin-top:8px">${cats.map(([id, v]) => `<div class="catrow"><div class="top"><span>${catById(id).emoji} ${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(s.exp ? v / s.exp * 100 : 0)}%</span></div>${bar(s.exp ? v / s.exp * 100 : 0)}</div>`).join('')}</div>` : ''}`) +
+      ${cats.length ? `<div style="margin-top:8px">${cats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(s.exp ? v / s.exp * 100 : 0)}%</span></div>${bar(s.exp ? v / s.exp * 100 : 0)}</div>`).join('')}</div>` : ''}`) +
     card(`Movimientos (${list.length})`, groups.length
       ? groups.map(g => `<div class="dayhead"><span>${fmtDate(g.date)}</span><span>${money(sum(g.items.filter(t => t.type === 'expense'), t => t.amount))}</span></div>${g.items.map(txRow).join('')}`).join('')
       : emptyMsg('No hay movimientos en este periodo.<br>Toca ＋ para agregar uno.')) +
@@ -418,7 +433,7 @@ function viewBudget() {
     card('Por categoría', rows.map(({ c, b, spent }) => {
       const pct = b ? spent / b * 100 : 0;
       return `<button class="row" data-act="editBudget" data-id="${esc(c.id)}" style="flex-wrap:wrap">
-        <span class="emo">${c.emoji}</span>
+        <span class="emo">${mono(c)}</span>
         <span class="grow"><b>${esc(c.name)}</b><small>${b ? `${money(spent)} de ${money(b)}` : (spent ? `${money(spent)} gastado · sin presupuesto` : 'Toca para fijar un presupuesto')}</small></span>
         <span class="amt ${b && b - spent < 0 ? 'neg' : ''}">${b ? money(b - spent) : '＋'}</span>
         ${b ? `<span style="flex-basis:100%">${bar(pct, budgetCls(pct))}</span>` : ''}
@@ -601,7 +616,7 @@ function viewYear() {
       ${budgetMonths.length ? `<div class="kv"><span>Presupuesto cumplido</span><b>${met} de ${plural(budgetMonths.length, 'mes', 'meses')}</b></div>` : ''}
       ${b.exp > 0 ? `<div class="kv"><span>Gastos vs ${y - 1}${cur ? ' (mismo periodo)' : ''}</span>${chg(pctChange(a.exp, b.exp), true)}</div>` : ''}
       ${b.inc > 0 ? `<div class="kv"><span>Ingresos vs ${y - 1}${cur ? ' (mismo periodo)' : ''}</span>${chg(pctChange(a.inc, b.inc), false)}</div>` : ''}`)}
-    ${cats.length ? card('Dónde se fue el dinero', cats.map(([id, v]) => `<div class="catrow"><div class="top"><span>${catById(id).emoji} ${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(d.exp ? v / d.exp * 100 : 0)}%</span></div>${bar(d.exp ? v / d.exp * 100 : 0)}</div>`).join('')) : ''}
+    ${cats.length ? card('Dónde se fue el dinero', cats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(d.exp ? v / d.exp * 100 : 0)}%</span></div>${bar(d.exp ? v / d.exp * 100 : 0)}</div>`).join('')) : ''}
     ${card(`Ahorro y deudas en ${y}`, `
       <div class="kv"><span>Ahorrado en metas</span><b class="pos">${money(saved)}</b></div>
       <div class="kv"><span>Pagos de deudas</span><b>${money(debtPaid)}</b></div>`)}`) +
@@ -615,8 +630,8 @@ function viewYear() {
 
 /* ----- Más ----- */
 function viewMore() {
-  const items = [['deudas', '💳', 'Deudas', 'Saldos, cuotas y vencimientos'], ['inversiones', '📈', 'Inversiones', 'Lo que has invertido y su resultado'],
-    ['anual', '📊', 'Resumen anual', 'Indicadores clave del año'], ['ajustes', '⚙️', 'Ajustes', 'Perfil, preferencias y respaldo']];
+  const items = [['deudas', ICON.deudas, 'Deudas', 'Saldos, cuotas y vencimientos'], ['inversiones', ICON.inversiones, 'Inversiones', 'Lo que has invertido y su resultado'],
+    ['anual', ICON.anual, 'Resumen anual', 'Indicadores clave del año'], ['ajustes', ICON.ajustes, 'Ajustes', 'Perfil, preferencias y respaldo']];
   return head('Más', 'Otras secciones') +
     card('', items.map(([k, i, t, s]) => `<a class="row" href="#/${k}"><span class="emo">${i}</span><span class="grow"><b>${t}</b><small>${s}</small></span><span class="muted" aria-hidden="true">›</span></a>`).join(''));
 }
@@ -628,7 +643,7 @@ function viewSettings() {
     ? `<div class="kv"><span>Nombre</span><b>${esc(pr.name)}</b></div><div class="kv"><span>Cumpleaños</span><b>${fmtBirthday(pr.birthdate)}</b></div><div class="btn-row"><button class="btn small" data-act="editProfile">Editar perfil</button></div>`
     : '<div class="btn-row"><button class="btn primary small" data-act="editProfile">Completar perfil</button></div>');
   const opt = (arr, cur) => arr.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('');
-  const catRow = c => `<div class="mini"><span style="color:var(--text)">${c.emoji} ${esc(c.name)}</span><span class="badge">${c.type === 'income' ? 'Ingreso' : 'Gasto'}</span><button class="x" data-act="delCat" data-id="${esc(c.id)}" aria-label="Eliminar categoría">✕</button></div>`;
+  const catRow = c => `<div class="mini"><span class="catname" style="color:var(--text)">${mono(c, true)}${esc(c.name)}</span><span class="badge">${c.type === 'income' ? 'Ingreso' : 'Gasto'}</span><button class="x" data-act="delCat" data-id="${esc(c.id)}" aria-label="Eliminar categoría">✕</button></div>`;
   return head('Ajustes', 'Perfil, sincronización y respaldo') + profileCard +
     card('Sincronización', `<div id="syncBody">${syncCardInner()}</div>`) +
     card('Preferencias', `
@@ -659,7 +674,7 @@ function viewSettings() {
    ========================================================= */
 function openTxForm(tx, type = 'expense') {
   const isEdit = !!tx; type = tx ? tx.type : type;
-  const catOpts = t => state.categories.filter(c => c.type === t).map(c => ({ value: c.id, label: `${c.emoji} ${c.name}` }));
+  const catOpts = t => state.categories.filter(c => c.type === t).map(c => ({ value: c.id, label: c.name }));
   openForm({
     title: isEdit ? 'Editar movimiento' : type === 'income' ? 'Nuevo ingreso' : 'Nuevo gasto',
     fields: [
@@ -828,11 +843,10 @@ function openCatForm() {
     title: 'Nueva categoría',
     fields: [
       { name: 'name', label: 'Nombre', required: true },
-      { name: 'emoji', label: 'Emoji', placeholder: '🍔' },
       { name: 'type', label: 'Tipo', type: 'select', options: [{ value: 'expense', label: 'Gasto' }, { value: 'income', label: 'Ingreso' }] }
     ],
-    values: { emoji: '📦' }, focus: 'name',
-    onSubmit: v => { state.categories.push({ id: uid(), name: v.name, emoji: v.emoji || '📦', type: v.type }); save(); render(true); }
+    focus: 'name',
+    onSubmit: v => { state.categories.push({ id: uid(), name: v.name, emoji: '', type: v.type }); save(); render(true); }
   });
 }
 
@@ -1048,9 +1062,9 @@ const actions = {
 const routes = { home: viewHome, gastos: viewTx, presupuesto: viewBudget, metas: viewGoals, deudas: viewDebts, inversiones: viewInv, anual: viewYear, mas: viewMore, ajustes: viewSettings };
 // [ruta, ícono, texto, clase]. En el celular se ven 5 pestañas (la última, "Más", agrupa el resto); en PC se ven todas.
 const NAV = [
-  ['home', '🏠', 'Inicio', ''], ['gastos', '🧾', 'Gastos', ''], ['presupuesto', '🎯', 'Presupuesto', ''], ['metas', '🐷', 'Metas', ''],
-  ['deudas', '💳', 'Deudas', 'only-desktop'], ['inversiones', '📈', 'Inversiones', 'only-desktop'], ['anual', '📊', 'Resumen anual', 'only-desktop'], ['ajustes', '⚙️', 'Ajustes', 'only-desktop'],
-  ['mas', '☰', 'Más', 'only-mobile']
+  ['home', ICON.home, 'Inicio', ''], ['gastos', ICON.gastos, 'Gastos', ''], ['presupuesto', ICON.presupuesto, 'Presupuesto', ''], ['metas', ICON.metas, 'Metas', ''],
+  ['deudas', ICON.deudas, 'Deudas', 'only-desktop'], ['inversiones', ICON.inversiones, 'Inversiones', 'only-desktop'], ['anual', ICON.anual, 'Resumen anual', 'only-desktop'], ['ajustes', ICON.ajustes, 'Ajustes', 'only-desktop'],
+  ['mas', ICON.mas, 'Más', 'only-mobile']
 ];
 const MORE = ['mas', 'deudas', 'inversiones', 'anual', 'ajustes'];
 function currentRoute() {
@@ -1059,7 +1073,7 @@ function currentRoute() {
 }
 function render(keepScroll) {
   const r = currentRoute(), y = window.scrollY;
-  $('#nav').innerHTML = NAV.map(([k, i, l, cls]) => {
+  $('#nav').innerHTML = '<div class="brand only-desktop"><span class="logo-tile">'+LOGO(30)+'</span><span>Mis Finanzas</span></div>' + NAV.map(([k, i, l, cls]) => {
     const on = k === r || (k === 'mas' && MORE.includes(r));
     return `<a href="#/${k}" class="${on ? 'active' : ''} ${cls}" ${on ? 'aria-current="page"' : ''}><span class="ico">${i}</span><span class="lbl">${l}</span></a>`;
   }).join('');
