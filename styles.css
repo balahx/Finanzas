@@ -201,3 +201,6 @@ a.row{color:inherit;text-decoration:none}
 .yrow.head{color:var(--muted);font-weight:600;font-size:12px}
 .yrow.tot{font-weight:700;border-bottom:0}
 .yrow.tot span:first-child{color:var(--text)}
+
+.form-error{color:var(--neg-text);font-size:14px;font-weight:600;margin:0 0 10px;min-height:0;overflow-wrap:anywhere}
+.form-error:empty{display:none}

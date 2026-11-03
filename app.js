@@ -945,7 +945,7 @@ function syncStatusText() {
   if (s.state === 'syncing') return 'Sincronizando…';
   if (s.state === 'error') {
     if (s.code === 'permission-denied') return 'Firestore rechazó el acceso: revisa las reglas (SINCRONIZACION.md)';
-    return 'Sin conexión o con error; se reintentará solo' + (s.message ? ` (${s.message})` : '');
+    return 'Sin conexión o con error; se reintentará solo' + (s.code || s.message ? ` (${s.code || s.message})` : '');
   }
   if (s.state === 'ok' && s.last) return 'Sincronizado a las ' + new Date(s.last).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
   return 'Conectando…';
@@ -973,14 +973,20 @@ function openAuthForm(mode) {
   }[mode];
   openForm({
     title: cfg.title, note: cfg.note, fields: cfg.fields, submitLabel: cfg.submit, focus: 'email',
+    extra: '<p id="formError" class="form-error" role="alert"></p>' + (mode === 'reset' ? '' : '<p style="margin:0 0 10px"><button type="button" class="link" data-act="togglePass">Mostrar contraseña</button></p>'),
     validate: d => mode === 'signup' ? (d.password.length < 6 ? 'La contraseña debe tener al menos 6 caracteres' : d.password !== d.password2 ? 'Las contraseñas no coinciden' : null) : null,
     onSubmit: async d => {
+      const fe = $('#formError'); if (fe) fe.textContent = '';
       try {
         if (mode === 'login') await cloud.remote.signIn(d.email, d.password);
         else if (mode === 'signup') await cloud.remote.signUp(d.email, d.password);
         else { await cloud.remote.resetPassword(d.email); toast('Listo: revisa tu correo (y la carpeta de spam)'); }
         return true;
-      } catch (e) { toast(authErr(e)); return false; }
+      } catch (e) {
+        const msg = authErr(e), code = (e && e.code) ? ` [${e.code}]` : '';
+        if (fe) fe.textContent = msg + (msg.startsWith('No se pudo') ? '' : code); else toast(msg);
+        return false;
+      }
     }
   });
 }
@@ -1014,6 +1020,12 @@ const actions = {
   go: d => { location.hash = '#/' + d.to; },
   closeModal: () => tryClose(),
   welcomeLogin: () => { if (cloud.phase === 'ready') openAuthForm('login'); else toast('Conectando con el servicio… inténtalo en un momento'); },
+  togglePass: (d, el) => {
+    const f = ['f_password', 'f_password2'].map(id => document.getElementById(id)).filter(Boolean);
+    const show = f[0] && f[0].type === 'password';
+    f.forEach(i => { i.type = show ? 'text' : 'password'; });
+    if (el) el.textContent = show ? 'Ocultar contraseña' : 'Mostrar contraseña';
+  },
   syncLogin: () => openAuthForm('login'),
   syncSignup: () => openAuthForm('signup'),
   syncReset: () => openAuthForm('reset'),
