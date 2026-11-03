@@ -64,20 +64,21 @@ function defaults() {
   return {
     version: 1,
     profile: null,
-    settings: { currency: 'CLP', periodMode: 'week', weekStart: 1 },
+    settings: { currency: 'CLP', periodMode: 'week', weekStart: 1, notify: { loans: true, debts: true, savings: true, birthday: true } },
     categories: DEFAULT_CATS.map(c => ({ ...c })),
-    transactions: [], budgets: {}, goals: [], debts: [], investments: []
+    transactions: [], budgets: {}, goals: [], debts: [], investments: [], loans: []
   };
 }
 function migrate(data) {
   const d = defaults();
-  const s = { ...d, ...data, settings: { ...d.settings, ...(data.settings || {}) } };
-  for (const k of ['categories', 'transactions', 'goals', 'debts', 'investments']) if (!Array.isArray(s[k])) s[k] = d[k];
+  const s = { ...d, ...data, settings: { ...d.settings, ...(data.settings || {}), notify: { ...d.settings.notify, ...((data.settings || {}).notify || {}) } } };
+  for (const k of ['categories', 'transactions', 'goals', 'debts', 'investments', 'loans']) if (!Array.isArray(s[k])) s[k] = d[k];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   const p = s.profile;
   if (!p || typeof p.name !== 'string' || !p.name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(p.birthdate || '')) s.profile = null;
   s.goals.forEach(g => { if (!Array.isArray(g.contributions)) g.contributions = []; });
   s.debts.forEach(x => { if (!Array.isArray(x.payments)) x.payments = []; });
+  s.loans.forEach(x => { if (!Array.isArray(x.payments)) x.payments = []; x.person = String(x.person || ''); x.dueDate = x.dueDate || ''; });
   s.investments.forEach(x => { if (!Array.isArray(x.history)) x.history = []; });
   return s;
 }
@@ -98,7 +99,18 @@ function save() {
   if (cloud.engine) cloud.engine.notifyLocalChange(); // si hay sesión de sincronización, sube los cambios
 }
 const cloud = { cfg: window.FIREBASE_CONFIG || null, remote: null, engine: null, user: null, phase: 'off', error: '', status: { state: 'idle', last: 0, message: '' } };
-const ui = { refDate: today(), budgetDate: today(), year: new Date().getFullYear(), bdayClosed: false };
+/* Avisos cerrados / mostrados: se guardan solo en este dispositivo (no se sincronizan) */
+const NOTICE_KEY = 'finanzas.notices';
+function loadNotices() {
+  try {
+    const n = JSON.parse(localStorage.getItem(NOTICE_KEY) || '{}'), lim = toISO(new Date(Date.now() - 400 * 864e5));
+    const clean = o => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => typeof v === 'string' && v >= lim)); // olvida avisos de hace más de ~13 meses
+    return { dismissed: clean(n.dismissed), shown: clean(n.shown), intro: !!n.intro };
+  } catch (e) { return { dismissed: {}, shown: {}, intro: false }; }
+}
+let N = loadNotices();
+const saveNotices = () => { try { localStorage.setItem(NOTICE_KEY, JSON.stringify(N)); } catch (e) { /* sin almacenamiento: solo se pierde el registro */ } };
+const ui = { refDate: today(), budgetDate: today(), year: new Date().getFullYear(), bdayClosed: false, day: today(), loanTab: 'persons', loanPerson: null };
 const isLeap = y => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 
 function money(n) {
@@ -153,6 +165,27 @@ function sums(list) {
   }
   return { inc, exp, bal: inc - exp, byCat };
 }
+/* Flujos de un periodo: ingresos − gastos − ahorros − préstamos entregados + cobros de préstamos */
+function flows(p) {
+  const s = sums(txIn(p));
+  let sav = 0, lent = 0, back = 0;
+  for (const g of state.goals) for (const c of g.contributions) if (inRange(c.date, p)) sav += c.amount;
+  for (const l of state.loans) {
+    if (inRange(l.startDate, p)) lent += l.amount;
+    for (const x of l.payments) if (inRange(x.date, p)) back += x.amount;
+  }
+  const loanNet = lent - back;
+  return { ...s, sav, lent, back, loanNet, bal: s.inc - s.exp - sav - loanNet };
+}
+function movesIn(p) {
+  const out = txIn(p).map(t => ({ k: 'tx', t, date: t.date, ts: t.createdAt || 0 }));
+  for (const g of state.goals) for (const c of g.contributions) if (inRange(c.date, p)) out.push({ k: 'sav', g, c, date: c.date, ts: 0 });
+  for (const l of state.loans) {
+    if (inRange(l.startDate, p)) out.push({ k: 'loan', l, date: l.startDate, ts: l.createdAt || 0 });
+    for (const x of l.payments) if (inRange(x.date, p)) out.push({ k: 'lpay', l, x, date: x.date, ts: 0 });
+  }
+  return out.sort((a, b) => b.date.localeCompare(a.date) || b.ts - a.ts);
+}
 /* ---------- Íconos de trazo y monogramas (sin emojis en la interfaz) ---------- */
 const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"${extra}>${d}</svg>`;
 const ICON = {
@@ -164,7 +197,8 @@ const ICON = {
   inversiones: svg('<path d="M4 17 L10 11 L14 15 L20 7"/><path d="M15 7 H20 V12"/>'),
   anual: svg('<path d="M5 20 V11 M12 20 V5 M19 20 V14"/>'),
   ajustes: svg('<path d="M4 7 H20 M4 17 H20"/><circle cx="9" cy="7" r="2.5" fill="currentColor"/><circle cx="15" cy="17" r="2.5" fill="currentColor"/>'),
-  mas: svg('<path d="M4 7 H20 M4 12 H20 M4 17 H20"/>')
+  mas: svg('<path d="M4 7 H20 M4 12 H20 M4 17 H20"/>'),
+  prestamos: svg('<path d="M4 8 H17 L14 5"/><path d="M20 16 H7 L10 19"/>')
 };
 // Símbolo "Órbita + Sigma" (versión para fondo burdeos)
 const LOGO = s => `<svg width="${s}" height="${s}" viewBox="-6 -6 112 112" aria-hidden="true"><circle cx="50" cy="50" r="40" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-dasharray="190 61" transform="rotate(-40 50 50)"/><circle cx="54.18" cy="10.22" r="7.5" fill="#D9B26F"/><path d="M64 34 H36 L52 50 L36 66 H64" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-linejoin="miter"/></svg>`;
@@ -173,6 +207,38 @@ const catById = id => state.categories.find(c => c.id === id) || { name: 'Sin ca
 const debtRemaining = d => Math.max(0, d.total - sum(d.payments, p => p.amount));
 const goalSaved = g => sum(g.contributions, c => c.amount);
 const invGain = i => i.current - i.invested;
+const monthOf = iso => periodOf('month', iso);
+const goalMonthSaved = (g, iso = today()) => { const p = monthOf(iso); return sum(g.contributions.filter(c => inRange(c.date, p)), c => c.amount); };
+function savingsSummary(iso = today()) {
+  const active = state.goals.filter(g => goalInfo(g).left > 0 && g.monthly > 0);
+  return { total: sum(state.goals, goalSaved), month: sum(state.goals, g => goalMonthSaved(g, iso)), plan: sum(active, g => g.monthly), hasPlan: active.length > 0 };
+}
+/* Préstamos a otras personas */
+const loanPaid = l => sum(l.payments, p => p.amount);
+const loanRemaining = l => Math.max(0, l.amount - loanPaid(l));
+const personKey = n => String(n || '').trim().toLowerCase();
+function loanInfo(l) {
+  if (loanRemaining(l) <= 0) return { cls: 'ok', text: 'Cobrado ✓' };
+  if (!l.dueDate) return { cls: '', text: 'Sin fecha de cobro' };
+  const n = daysBetween(today(), l.dueDate);
+  if (n < 0) return { cls: 'bad', text: `Atrasado ${plural(-n, 'día', 'días')}` };
+  if (n === 0) return { cls: 'warn', text: 'Cobrar hoy' };
+  if (n <= 7) return { cls: 'warn', text: `Cobrar en ${plural(n, 'día', 'días')}` };
+  return { cls: '', text: `Cobrar ${fmtShort(l.dueDate)}` };
+}
+function loanPeople() {
+  const map = new Map();
+  for (const l of state.loans) {
+    const k = personKey(l.person);
+    if (!map.has(k)) map.set(k, { key: k, name: l.person.trim(), loans: [] });
+    map.get(k).loans.push(l);
+  }
+  return [...map.values()].map(p => {
+    const open = p.loans.filter(l => loanRemaining(l) > 0);
+    const dues = open.filter(l => l.dueDate).map(l => l.dueDate).sort();
+    return { ...p, total: sum(p.loans, l => l.amount), paid: sum(p.loans, loanPaid), pending: sum(p.loans, loanRemaining), nextDue: dues[0] || '', overdue: open.filter(l => l.dueDate && l.dueDate < today()).length };
+  }).sort((a, b) => (b.pending > 0) - (a.pending > 0) || b.pending - a.pending || a.name.localeCompare(b.name, 'es'));
+}
 
 function dueInfo(d) {
   if (debtRemaining(d) <= 0) return { cls: 'ok', text: 'Pagada ✓' };
@@ -193,6 +259,91 @@ function goalInfo(g) {
     else plan = `Para llegar a tiempo: ≈ ${money(left / (days / 30.44))} al mes (${money(left / (days / 7))} por semana)`;
   }
   return { saved, left, pct, plan };
+}
+
+/* ---------- Avisos (banners) ---------- */
+/* Un aviso se muestra desde su fecha y se queda hasta que lo cierras con la ✕ (cobros, vencimientos y ahorros).
+   Los de cumpleaños se muestran una sola vez: el día que corresponde o, si no entraste ese día, la primera vez que entres después. */
+function noticeActive(key, persistent) {
+  if (N.dismissed[key]) return false;
+  if (!persistent) {
+    const sh = N.shown[key], t = today();
+    if (sh && sh !== t) return false;
+    if (!sh) { N.shown[key] = t; saveNotices(); }
+  }
+  return true;
+}
+const bdayOn = (iso, y) => { const [, m, d] = iso.split('-').map(Number); return `${y}-${pad(m)}-${pad(m === 2 && d === 29 && !isLeap(y) ? 28 : d)}`; };
+function birthdayNotice(t) {
+  const b = state.profile.birthdate, by = Number(b.slice(0, 4)), y = Number(t.slice(0, 4)), thisY = bdayOn(b, y);
+  const last = thisY <= t ? thisY : bdayOn(b, y - 1), next = thisY >= t ? thisY : bdayOn(b, y + 1);
+  const ly = Number(last.slice(0, 4));
+  if (t === thisY) return y > by && noticeActive(`bday:${y}`) ? { kind: 'today', key: `bday:${y}`, age: y - by } : null;
+  if (ly > by && addMonths(last, 6) > t) return noticeActive(`bday:${ly}`) ? { kind: 'belated', key: `bday:${ly}`, date: last, age: ly - by } : null; // pasó hace menos de 6 meses
+  const nd = daysBetween(t, next);
+  if (nd <= 7 && noticeActive(`bdayup:${next.slice(0, 4)}`)) return { kind: 'soon', key: `bdayup:${next.slice(0, 4)}`, date: next, days: nd };
+  if (N.intro && noticeActive('bdayreg')) return { kind: 'soon', key: 'bdayreg', date: next, days: nd }; // recién registrado y faltan menos de 6 meses
+  return null;
+}
+function lastReminderDate(g, t) {
+  const d = fromISO(t), y = d.getFullYear(), m = d.getMonth();
+  const mk = (yy, mm) => toISO(new Date(yy, mm, Math.min(g.reminderDay, new Date(yy, mm + 1, 0).getDate())));
+  const occ = mk(y, m);
+  return occ <= t ? occ : mk(m === 0 ? y - 1 : y, m === 0 ? 11 : m - 1);
+}
+function computeNotices() {
+  const t = today(), n = state.settings.notify || {}, out = [];
+  if (n.birthday !== false && state.profile) { const b = birthdayNotice(t); if (b) out.push({ type: 'birthday', ...b }); }
+  if (n.loans !== false) {
+    state.loans.filter(l => loanRemaining(l) > 0 && l.dueDate && l.dueDate <= t).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).forEach(l => {
+      const key = `loan:${l.id}:${l.dueDate}`; if (noticeActive(key, true)) out.push({ type: 'loan', key, l, late: daysBetween(l.dueDate, t) });
+    });
+  }
+  if (n.debts !== false) {
+    state.debts.filter(d => debtRemaining(d) > 0 && d.nextDue && d.nextDue <= t).sort((a, b) => a.nextDue.localeCompare(b.nextDue)).forEach(d => {
+      const key = `debt:${d.id}:${d.nextDue}`; if (noticeActive(key, true)) out.push({ type: 'debt', key, d, late: daysBetween(d.nextDue, t) });
+    });
+  }
+  if (n.savings !== false) {
+    for (const g of state.goals) {
+      if (!(g.reminderDay > 0) || goalInfo(g).left <= 0) continue;
+      const occ = lastReminderDate(g, t);
+      if (occ < (g.reminderSince || '0000-00-00')) continue;
+      const done = goalMonthSaved(g, occ);
+      if (g.monthly > 0 ? done >= g.monthly : done > 0) continue; // ya ahorraste lo de ese mes
+      const key = `save:${g.id}:${occ.slice(0, 7)}`; if (noticeActive(key, true)) out.push({ type: 'save', key, g, occ, late: daysBetween(occ, t) });
+    }
+  }
+  return out;
+}
+function noticeHTML(x) {
+  const close = `<button class="n-x" data-act="dismissNotice" data-key="${esc(x.key)}" aria-label="Cerrar aviso">✕</button>`;
+  const box = (tone, icon, title, text, actions) => `<div class="notice ${tone}" role="status"><span class="n-ic" aria-hidden="true">${icon}</span><div class="n-body"><b>${title}</b><p>${text}</p>${actions ? `<div class="n-actions">${actions}</div>` : ''}</div>${close}</div>`;
+  if (x.type === 'birthday') {
+    const nm = esc(state.profile.name);
+    const [ttl, txt] = x.kind === 'today' ? [`¡Feliz cumpleaños, ${nm}!`, `Hoy cumples ${plural(x.age, 'año', 'años')}. Que tengas un día increíble 🎉`]
+      : x.kind === 'belated' ? [`¡Feliz cumpleaños atrasado, ${nm}!`, `Tu cumpleaños fue el ${fmtBirthday(x.date)}${daysBetween(x.date, today()) > 0 ? ` (hace ${plural(daysBetween(x.date, today()), 'día', 'días')})` : ''} y cumpliste ${plural(x.age, 'año', 'años')}. ¡Que lo hayas pasado increíble! 🎉`]
+      : [`¡Se acerca tu cumpleaños, ${nm}!`, `Será el ${fmtBirthday(x.date)}${x.days > 0 ? ` (en ${plural(x.days, 'día', 'días')})` : ''}. 🎂`];
+    return `<div class="birthday" role="status"><span class="cake" aria-hidden="true">🎂</span><div><b>${ttl}</b><p>${txt}</p></div><button class="bday-x" data-act="dismissNotice" data-key="${esc(x.key)}" aria-label="Cerrar saludo">✕</button></div>`;
+  }
+  if (x.type === 'loan') {
+    const l = x.l, ttl = x.late === 0 ? `Hoy vence el cobro a ${esc(l.person)}` : `Cobro vencido: ${esc(l.person)}`;
+    const txt = `${x.late === 0 ? 'Te debe' : `Debía pagarte el ${esc(fmtDate(l.dueDate))} (hace ${plural(x.late, 'día', 'días')}). Pendiente:`} <b>${money(loanRemaining(l))}</b> · prestado el ${esc(fmtShort(l.startDate))}`;
+    return box(x.late === 0 ? 'warn' : 'bad', ICON.prestamos, ttl, txt, `<button class="btn small" data-act="payLoan" data-id="${l.id}">Registrar cobro</button><a class="btn small" href="#/prestamos">Ver préstamos</a>`);
+  }
+  if (x.type === 'debt') {
+    const d = x.d, ttl = x.late === 0 ? `Hoy vence: ${esc(d.name)}` : `Vencida: ${esc(d.name)}`;
+    const txt = `${x.late === 0 ? 'A pagar' : `Venció el ${esc(fmtDate(d.nextDue))} (hace ${plural(x.late, 'día', 'días')}). A pagar:`} <b>${money(d.installment ? Math.min(d.installment, debtRemaining(d)) : debtRemaining(d))}</b>`;
+    return box(x.late === 0 ? 'warn' : 'bad', ICON.deudas, ttl, txt, `<button class="btn small" data-act="payDebt" data-id="${d.id}">Registrar pago</button><a class="btn small" href="#/deudas">Ver deudas</a>`);
+  }
+  const g = x.g, saved = goalMonthSaved(g, x.occ);
+  const ttl = x.late === 0 ? `Hoy toca ahorrar: ${esc(g.name)}` : `Aviso de ahorro pendiente: ${esc(g.name)}`;
+  const txt = `${x.late === 0 ? '' : `Tu aviso era el ${esc(fmtDate(x.occ))}. `}${g.monthly > 0 ? `Plan del mes: ${money(g.monthly)} · llevas ${money(saved)}.` : 'Aún no registras ahorro este mes.'}`;
+  return box('info', ICON.metas, ttl, txt, `<button class="btn small" data-act="addSaving" data-id="${g.id}">Registrar ahorro</button>`);
+}
+function noticesHTML() {
+  const list = computeNotices(), MAX = 4;
+  return list.slice(0, MAX).map(noticeHTML).join('') + (list.length > MAX ? `<p class="muted small notice-more">Tienes ${plural(list.length - MAX, 'aviso más', 'avisos más')}. Ciérralos para ver los siguientes.</p>` : '');
 }
 
 /* ---------- Componentes ---------- */
@@ -233,7 +384,8 @@ function fieldHTML(f, val) {
   } else if (f.type === 'number') {
     input = `<input id="${id}" name="${f.name}" type="number" inputmode="decimal" step="any" ${f.min !== undefined ? `min="${f.min}"` : ''} value="${esc(v)}" ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''}>`;
   } else {
-    input = `<input id="${id}" name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}" ${f.min ? `min="${f.min}"` : ''} ${f.max ? `max="${f.max}"` : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''} autocomplete="${f.autocomplete || 'off'}"${f.type === 'email' ? ' autocapitalize="none" spellcheck="false"' : ''}>`;
+    input = `<input id="${id}" name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}" ${f.min ? `min="${f.min}"` : ''} ${f.max ? `max="${f.max}"` : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''} autocomplete="${f.autocomplete || 'off'}"${f.type === 'email' ? ' autocapitalize="none" spellcheck="false"' : ''}${f.datalist ? ` list="dl_${f.name}"` : ''}>`;
+    if (f.datalist) input += `<datalist id="dl_${f.name}">${f.datalist.map(o => `<option value="${esc(o)}"></option>`).join('')}</datalist>`;
   }
   return `<div class="field"><label for="${id}">${esc(f.label)}${f.required ? ' *' : ''}</label>${input}</div>`;
 }
@@ -289,8 +441,8 @@ function openForm({ title, fields, values = {}, submitLabel = 'Guardar', onSubmi
 /* ----- Inicio ----- */
 function viewHome() {
   const now = today(), mode = state.settings.periodMode;
-  const pm = periodOf('month', now), sm = sums(txIn(pm));
-  const pp = periodOf(mode, now), sp = sums(txIn(pp));
+  const pm = periodOf('month', now), sm = flows(pm);
+  const pp = periodOf(mode, now), sp = flows(pp);
   const budget = state.budgets[monthKey(now)] || {};
   const budTotal = sum(Object.values(budget));
   const topCats = Object.entries(sp.byCat).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -298,23 +450,54 @@ function viewHome() {
     .map(d => ({ d, n: daysBetween(now, d.nextDue) })).filter(x => x.n <= 30).sort((a, b) => a.n - b.n).slice(0, 4);
   const goals = state.goals.slice().sort((a, b) => goalInfo(b).pct - goalInfo(a).pct).slice(0, 3);
   const invCur = sum(state.investments, i => i.current), invIn = sum(state.investments, i => i.invested);
+  const sv = savingsSummary(now);
+  const people = loanPeople(), pending = sum(state.loans, loanRemaining);
+  const overdueLoans = state.loans.filter(l => loanRemaining(l) > 0 && l.dueDate && l.dueDate < now).length;
+  const collect = state.loans.filter(l => loanRemaining(l) > 0 && l.dueDate && daysBetween(now, l.dueDate) <= 30)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 3);
 
   const c1 = card(`Este mes · ${esc(cap(MONTHS[fromISO(now).getMonth()]))}`, `
-    <div class="stats">
+    <div class="stats two">
       <div class="stat"><small>Ingresos</small><b class="pos">${money(sm.inc)}</b></div>
       <div class="stat"><small>Gastos</small><b>${money(sm.exp)}</b></div>
-      <div class="stat"><small>Saldo</small><b class="${sm.bal < 0 ? 'neg' : 'pos'}">${money(sm.bal)}</b></div>
+      <div class="stat"><small>Ahorros</small><b>${money(sm.sav)}</b></div>
+      ${sm.loanNet ? `<div class="stat"><small>Préstamos (neto)</small><b>${money(sm.loanNet)}</b></div>` : ''}
+      <div class="stat ${sm.loanNet ? 'span2' : ''}"><small>Saldo del mes</small><b class="${sm.bal < 0 ? 'neg' : 'pos'}">${money(sm.bal)}</b></div>
     </div>
-    <div class="btn-row"><button class="btn primary small" data-act="addTx" data-type="expense">＋ Gasto</button><button class="btn small" data-act="addTx" data-type="income">＋ Ingreso</button></div>`);
+    <p class="muted small" style="margin-top:8px">Saldo = ingresos − gastos − ahorros${sm.loanNet ? ' − préstamos' : ''}.</p>
+    <div class="btn-row"><button class="btn primary small" data-act="addTx" data-type="expense">＋ Gasto</button><button class="btn small" data-act="addTx" data-type="income">＋ Ingreso</button><button class="btn small" data-act="addSavingQuick">＋ Ahorro</button><button class="btn small" data-act="addLoan">＋ Préstamo</button></div>`);
+
+  const cS = card('Ahorro', `
+    <div class="stats ${sv.hasPlan ? '' : 'two'}">
+      <div class="stat"><small>Total ahorrado</small><b class="pos">${money(sv.total)}</b></div>
+      <div class="stat"><small>Este mes</small><b>${money(sv.month)}</b></div>
+      ${sv.hasPlan ? `<div class="stat"><small>Plan mensual</small><b>${money(sv.plan)}</b></div>` : ''}
+    </div>
+    ${sv.hasPlan ? `<div style="margin-top:10px"><div class="kv"><span>Ahorro mensual</span><b>${money(sv.month)} de ${money(sv.plan)}</b></div>${bar(sv.plan ? sv.month / sv.plan * 100 : 0, sv.month >= sv.plan ? 'ok' : '')}<p class="muted small">${sv.month >= sv.plan ? '¡Plan del mes cumplido!' : `Te faltan ${money(sv.plan - sv.month)} este mes`}</p></div>` : ''}
+    ${goals.length ? `<div style="margin-top:10px">${goals.map(g => { const i = goalInfo(g); return `<div class="catrow"><div class="top"><span>${esc(g.name)}</span><b>${Math.round(i.pct)}%</b></div>${bar(i.pct, i.pct >= 100 ? 'ok' : '')}</div>`; }).join('')}</div>` : emptyMsg('Aún no tienes metas ni ahorros.')}
+    <div class="btn-row"><button class="btn primary small" data-act="addSavingQuick">＋ Ahorro</button>${sv.hasPlan ? '' : '<button class="btn small" data-act="addMonthly">Crear ahorro mensual</button>'}<button class="btn small" data-act="addGoal">Nueva meta</button></div>`,
+    '<a class="link" href="#/metas">Metas</a>');
+
+  const cL = card('Préstamos', state.loans.length ? `
+    <div class="stats">
+      <div class="stat"><small>Por cobrar</small><b class="${pending ? '' : 'pos'}">${money(pending)}</b></div>
+      <div class="stat"><small>Personas</small><b>${people.filter(x => x.pending > 0).length}</b></div>
+      <div class="stat"><small>Atrasados</small><b class="${overdueLoans ? 'neg' : ''}">${overdueLoans}</b></div>
+    </div>
+    ${collect.length ? `<div style="margin-top:6px">${collect.map(l => { const i = loanInfo(l); return `<div class="row" style="cursor:default"><span class="emo">${ICON.prestamos}</span><span class="grow"><b>${esc(l.person)}</b><small>Cobrar ${fmtDate(l.dueDate)}</small></span><span style="text-align:right"><b>${money(loanRemaining(l))}</b><br><span class="badge ${i.cls}">${esc(i.text)}</span></span></div>`; }).join('')}</div>` : ''}
+    <div class="btn-row"><button class="btn small" data-act="addLoan">＋ Préstamo</button></div>` : `${emptyMsg('Aún no has prestado dinero a nadie.')}<div class="btn-row"><button class="btn small" data-act="addLoan">＋ Registrar préstamo</button></div>`,
+    '<a class="link" href="#/prestamos">Ver</a>');
 
   const c2 = card(`Resumen ${MODE_NAMES[mode]}`, `
     ${segmented(mode)}
     <p class="muted" style="margin-top:10px">${esc(periodLabel(mode, pp))}</p>
-    <div class="stats" style="margin-top:8px">
+    <div class="stats two" style="margin-top:8px">
       <div class="stat"><small>Gastos</small><b>${money(sp.exp)}</b></div>
       <div class="stat"><small>Ingresos</small><b class="pos">${money(sp.inc)}</b></div>
+      <div class="stat"><small>Ahorros</small><b>${money(sp.sav)}</b></div>
       <div class="stat"><small>Balance</small><b class="${sp.bal < 0 ? 'neg' : 'pos'}">${money(sp.bal)}</b></div>
     </div>
+    ${sp.loanNet ? `<p class="muted small" style="margin-top:6px">Incluye préstamos netos: ${money(sp.loanNet)} (entregado ${money(sp.lent)}, cobrado ${money(sp.back)}).</p>` : ''}
     ${topCats.length ? `<div style="margin-top:10px">${topCats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><b>${money(v)}</b></div>${bar(sp.exp ? v / sp.exp * 100 : 0)}</div>`).join('')}</div>` : emptyMsg('Sin gastos en este periodo.')}`,
     '<a class="link" href="#/gastos">Ver detalle</a>');
 
@@ -329,11 +512,6 @@ function viewHome() {
     return `<div class="row" style="cursor:default"><span class="emo">${ICON.deudas}</span><span class="grow"><b>${esc(d.name)}</b><small>${n < 0 ? 'Venció' : 'Vence'} ${fmtDate(d.nextDue)}</small></span><span style="text-align:right"><b>${money(d.installment || debtRemaining(d))}</b><br><span class="badge ${info.cls}">${esc(info.text)}</span></span></div>`;
   }).join('') : emptyMsg('No hay vencimientos en los próximos 30 días.'), '<a class="link" href="#/deudas">Deudas</a>');
 
-  const c5 = card('Metas de ahorro', goals.length ? goals.map(g => {
-    const i = goalInfo(g);
-    return `<div class="catrow"><div class="top"><span>${esc(g.name)}</span><b>${Math.round(i.pct)}%</b></div>${bar(i.pct, i.pct >= 100 ? 'ok' : '')}</div>`;
-  }).join('') : emptyMsg('Aún no tienes metas.'), '<a class="link" href="#/metas">Metas</a>');
-
   const c6 = card('Inversiones', state.investments.length ? `
     <div class="stats">
       <div class="stat"><small>Invertido</small><b>${money(invIn)}</b></div>
@@ -346,16 +524,16 @@ function viewHome() {
     <div class="stats">
       <div class="stat"><small>Ingresos</small><b class="pos">${money(yd.inc)}</b></div>
       <div class="stat"><small>Gastos</small><b>${money(yd.exp)}</b></div>
-      <div class="stat"><small>Ahorro neto</small><b class="${yd.net < 0 ? 'neg' : 'pos'}">${money(yd.net)}</b></div>
+      <div class="stat"><small>Ahorrado</small><b class="pos">${money(yd.sav)}</b></div>
     </div>` : emptyMsg('Aún no hay movimientos este año.'), '<a class="link" href="#/anual">Ver año</a>');
   const nm = state.profile ? esc(state.profile.name) : '';
-  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + c2 + c3 + cY + c4 + c5 + c6;
+  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + cS + cL + c2 + c3 + cY + c4 + c6;
 }
 
 /* ----- Gastos ----- */
 function viewTx() {
   const mode = state.settings.periodMode, p = periodOf(mode, ui.refDate);
-  const list = txIn(p).sort(txSort), s = sums(list);
+  const list = movesIn(p), s = flows(p);
   const cats = Object.entries(s.byCat).sort((a, b) => b[1] - a[1]);
   const isCurrent = inRange(today(), p);
   const lastDay = p.end < today() ? p.end : today();
@@ -372,8 +550,12 @@ function viewTx() {
   const histSums = hist.map(h => sums(txIn(h)).exp);
   const maxExp = Math.max(...histSums, 1);
 
-  const txRow = t => {
-    const c = catById(t.categoryId), inc = t.type === 'income';
+  const flowRow = (icon, title, sub, amt, href, pos) => `<a class="row" href="${href}"><span class="emo">${icon}</span><span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span><span class="amt ${pos ? 'pos' : ''}">${pos ? '+' : '−'}${money(amt)}</span></a>`;
+  const txRow = m => {
+    if (m.k === 'sav') return flowRow(ICON.metas, `Ahorro · ${m.g.name}`, m.c.note || 'Meta de ahorro', m.c.amount, '#/metas', false);
+    if (m.k === 'loan') return flowRow(ICON.prestamos, `Préstamo a ${m.l.person}`, m.l.note || 'Préstamo', m.l.amount, '#/prestamos', false);
+    if (m.k === 'lpay') return flowRow(ICON.prestamos, `Cobro de ${m.l.person}`, m.x.note || 'Cobro de préstamo', m.x.amount, '#/prestamos', true);
+    const t = m.t, c = catById(t.categoryId), inc = t.type === 'income';
     return `<button class="row" data-act="editTx" data-id="${t.id}"><span class="emo">${mono(c)}</span><span class="grow"><b>${esc(t.note || c.name)}</b><small>${esc(c.name)}</small></span><span class="amt ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${money(t.amount)}</span></button>`;
   };
 
@@ -386,15 +568,17 @@ function viewTx() {
         <button class="icon-btn" data-act="shift" data-dir="1" aria-label="Periodo siguiente">›</button>
       </div>`) +
     card(`Resumen ${MODE_NAMES[mode]}`, `
-      <div class="stats">
+      <div class="stats two">
         <div class="stat"><small>Gastos</small><b>${money(s.exp)}</b></div>
         <div class="stat"><small>Ingresos</small><b class="pos">${money(s.inc)}</b></div>
+        <div class="stat"><small>Ahorros</small><b>${money(s.sav)}</b></div>
         <div class="stat"><small>Balance</small><b class="${s.bal < 0 ? 'neg' : 'pos'}">${money(s.bal)}</b></div>
       </div>
+      ${s.loanNet ? `<p class="muted small" style="margin-top:6px">Incluye préstamos netos: ${money(s.loanNet)} (entregado ${money(s.lent)}, cobrado ${money(s.back)}).</p>` : ''}
       <p class="muted small" style="margin-top:8px">Promedio diario de gasto: <b>${money(s.exp / elapsed)}</b></p>
       ${cats.length ? `<div style="margin-top:8px">${cats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(s.exp ? v / s.exp * 100 : 0)}%</span></div>${bar(s.exp ? v / s.exp * 100 : 0)}</div>`).join('')}</div>` : ''}`) +
     card(`Movimientos (${list.length})`, groups.length
-      ? groups.map(g => `<div class="dayhead"><span>${fmtDate(g.date)}</span><span>${money(sum(g.items.filter(t => t.type === 'expense'), t => t.amount))}</span></div>${g.items.map(txRow).join('')}`).join('')
+      ? groups.map(g => `<div class="dayhead"><span>${fmtDate(g.date)}</span><span>${money(sum(g.items.filter(m => m.k === 'tx' && m.t.type === 'expense'), m => m.t.amount))}</span></div>${g.items.map(txRow).join('')}`).join('')
       : emptyMsg('No hay movimientos en este periodo.<br>Toca ＋ para agregar uno.')) +
     card(`Últimos ${hist.length} periodos`, hist.map((h, i) => `
       <button class="hist ${h.start === p.start ? 'cur' : ''}" data-act="goPeriod" data-date="${h.start}"><span>${esc(shortLabel(mode, h))}</span>${bar(histSums[i] / maxExp * 100)}<b>${money(histSums[i])}</b></button>`).join('')) +
@@ -428,7 +612,7 @@ function viewBudget() {
       </div>
       ${total ? bar(pctTotal, budgetCls(pctTotal)) : ''}
       ${total ? `<p class="muted small">Equivale a ≈ ${money(total / 2)} por quincena · ${money(total * 7 / dim)} por semana.</p>` : ''}
-      <p class="muted small" style="margin-top:6px">Ingresos del mes: <b>${money(s.inc)}</b>${s.inc ? ` · Sin asignar: <b class="${s.inc - total < 0 ? 'neg' : 'pos'}">${money(s.inc - total)}</b>` : ''}</p>
+      <p class="muted small" style="margin-top:6px">Ingresos del mes: <b>${money(s.inc)}</b>${s.sav ? ` · Ahorrado: <b>${money(s.sav)}</b>` : ''}${s.inc ? ` · Sin asignar: <b class="${s.inc - total - s.sav < 0 ? 'neg' : 'pos'}">${money(s.inc - total - s.sav)}</b>` : ''}</p>
       <div class="btn-row"><button class="btn small" data-act="copyBudget">Copiar del mes anterior</button></div>`) +
     card('Por categoría', rows.map(({ c, b, spent }) => {
       const pct = b ? spent / b * 100 : 0;
@@ -444,22 +628,33 @@ function viewBudget() {
 /* ----- Metas y ahorros ----- */
 function viewGoals() {
   const goals = state.goals.slice().sort((a, b) => (goalInfo(a).left <= 0) - (goalInfo(b).left <= 0) || (a.deadline || '9999').localeCompare(b.deadline || '9999'));
-  const totalSaved = sum(state.goals, goalSaved), totalTarget = sum(state.goals, g => g.target);
+  const totalTarget = sum(state.goals, g => g.target), sv = savingsSummary();
   const goalCard = g => {
     const i = goalInfo(g), done = i.left <= 0;
     const dl = g.deadline ? daysBetween(today(), g.deadline) : null;
+    const ms = goalMonthSaved(g);
     return `<section class="card">
       <div class="card-head"><h2>${esc(g.name)}</h2>${done ? '<span class="badge ok">Cumplida</span>' : dl !== null ? `<span class="badge ${dl < 0 ? 'bad' : dl <= 30 ? 'warn' : ''}">${dl < 0 ? 'Plazo vencido' : `Faltan ${plural(dl, 'día', 'días')}`}</span>` : ''}</div>
       <div class="kv"><span>Ahorrado</span><b>${money(i.saved)} de ${money(g.target)}</b></div>
       ${bar(i.pct, done ? 'ok' : '')}
       <p class="muted small">${Math.round(i.pct)}% completado${g.deadline ? ` · Fecha objetivo: ${fmtDate(g.deadline)}` : ''}</p>
+      ${g.reminderDay > 0 && !done ? `<p class="muted small" style="margin-top:6px">Aviso de ahorro: el día ${g.reminderDay} de cada mes.</p>` : ''}
+      ${g.monthly > 0 && !done ? `<div class="kv" style="margin-top:8px"><span>Ahorro mensual</span><b>${money(ms)} de ${money(g.monthly)}</b></div>${bar(ms / g.monthly * 100, ms >= g.monthly ? 'ok' : '')}` : ''}
       ${i.plan ? `<p class="muted small" style="margin-top:6px">${esc(i.plan)}</p>` : ''}
       <div class="btn-row"><button class="btn primary small" data-act="addSaving" data-id="${g.id}">＋ Registrar ahorro</button><button class="btn small" data-act="editGoal" data-id="${g.id}">Editar</button></div>
       ${g.contributions.length ? `<details><summary>Historial de ahorros (${g.contributions.length})</summary>${g.contributions.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => `<div class="mini"><span>${fmtDate(c.date)}${c.note ? ' · ' + esc(c.note) : ''}</span><b>${money(c.amount)}</b><button class="x" data-act="delSaving" data-id="${g.id}" data-cid="${c.id}" aria-label="Eliminar ahorro">✕</button></div>`).join('')}</details>` : ''}
     </section>`;
   };
+  const monthly = sv.hasPlan
+    ? card('Ahorro mensual', `
+        <div class="kv"><span>Este mes</span><b>${money(sv.month)} de ${money(sv.plan)}</b></div>
+        ${bar(sv.plan ? sv.month / sv.plan * 100 : 0, sv.month >= sv.plan ? 'ok' : '')}
+        <p class="muted small">${sv.month >= sv.plan ? '¡Plan del mes cumplido!' : `Te faltan ${money(sv.plan - sv.month)} para cumplir el plan de ${esc(cap(MONTHS[new Date().getMonth()]))}.`}</p>
+        <div class="btn-row"><button class="btn primary small" data-act="addSavingQuick">＋ Registrar ahorro</button><button class="btn small" data-act="addMonthly">Otro ahorro mensual</button></div>`)
+    : card('Ahorro mensual', `<p class="muted">Define cuánto quieres ahorrar cada mes. Se descuenta de tu saldo y se ve en Inicio.</p><div class="btn-row"><button class="btn primary small" data-act="addMonthly">Crear ahorro mensual</button></div>`);
   return head('Metas y ahorros', 'Planifica y registra lo que vas ahorrando') +
-    (state.goals.length ? card('', `<div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><small>Total ahorrado</small><b class="pos">${money(totalSaved)}</b></div><div class="stat"><small>Total de metas</small><b>${money(totalTarget)}</b></div></div>`) : '') +
+    (state.goals.length ? card('', `<div class="stats two"><div class="stat"><small>Total ahorrado</small><b class="pos">${money(sv.total)}</b></div><div class="stat"><small>Total de metas</small><b>${money(totalTarget)}</b></div><div class="stat"><small>Ahorrado este mes</small><b>${money(sv.month)}</b></div><div class="stat"><small>Plan mensual</small><b>${sv.hasPlan ? money(sv.plan) : '—'}</b></div></div>`) : '') +
+    monthly +
     (goals.length ? goals.map(goalCard).join('') : card('', emptyMsg('Crea tu primera meta: fondo de emergencia, vacaciones, un auto…'))) +
     fab('addGoal');
 }
@@ -492,6 +687,55 @@ function viewDebts() {
     (state.debts.length ? card('', `<div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><small>Total que debes</small><b class="${owed ? 'neg' : 'pos'}">${money(owed)}</b></div><div class="stat"><small>Cuotas mensuales</small><b>${money(monthly)}</b></div></div>`) : '') +
     (list.length ? list.map(debtCard).join('') : card('', emptyMsg('No tienes deudas registradas. 🎉<br>Si tienes alguna, toca ＋ para agregarla.'))) +
     fab('addDebt');
+}
+
+/* ----- Préstamos a otras personas ----- */
+function viewLoans() {
+  const people = loanPeople(), pend = sum(state.loans, loanRemaining), tot = sum(state.loans, l => l.amount), paid = sum(state.loans, loanPaid);
+  if (ui.loanPerson && !people.some(x => x.key === ui.loanPerson)) ui.loanPerson = null;
+  const person = ui.loanPerson ? people.find(x => x.key === ui.loanPerson) : null;
+  const loanCard = (l, showPerson) => {
+    const rem = loanRemaining(l), paid = loanPaid(l), info = loanInfo(l), pct = l.amount > 0 ? Math.min(100, paid / l.amount * 100) : 0;
+    return `<section class="card">
+      <div class="card-head"><h2>${showPerson ? esc(l.person) : `Préstamo del ${esc(fmtShort(l.startDate))}`}</h2><span class="badge ${info.cls}">${esc(info.text)}</span></div>
+      <div class="kv"><span>Monto prestado</span><b>${money(l.amount)}</b></div>
+      <div class="kv"><span>Por cobrar</span><b class="${rem ? '' : 'pos'}">${money(rem)}</b></div>
+      <div class="kv"><span>Fecha del préstamo</span><b>${fmtDate(l.startDate)}</b></div>
+      ${l.dueDate ? `<div class="kv"><span>Fecha de cobro</span><b>${fmtDate(l.dueDate)}</b></div>` : ''}
+      ${bar(pct, 'ok')}
+      <p class="muted small">Cobrado ${money(paid)} de ${money(l.amount)} (${Math.round(pct)}%)${l.note ? ' · ' + esc(l.note) : ''}</p>
+      <div class="btn-row">${rem > 0 ? `<button class="btn primary small" data-act="payLoan" data-id="${l.id}">Registrar cobro</button>` : ''}<button class="btn small" data-act="editLoan" data-id="${l.id}">Editar</button></div>
+      ${l.payments.length ? `<details><summary>Cobros recibidos (${l.payments.length})</summary>${l.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x => `<div class="mini"><span>${fmtDate(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span><b>${money(x.amount)}</b><button class="x" data-act="delLoanPay" data-id="${l.id}" data-pid="${x.id}" aria-label="Eliminar cobro">✕</button></div>`).join('')}</details>` : ''}
+    </section>`;
+  };
+  const sortLoans = arr => arr.slice().sort((a, b) => (loanRemaining(b) > 0) - (loanRemaining(a) > 0) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || b.startDate.localeCompare(a.startDate));
+  const personRow = x => {
+    const cls = x.pending <= 0 ? 'ok' : x.overdue ? 'bad' : '';
+    const txt = x.pending <= 0 ? 'Al día ✓' : x.overdue ? `${plural(x.overdue, 'atrasado', 'atrasados')}` : x.nextDue ? `Cobrar ${fmtShort(x.nextDue)}` : 'Sin fecha';
+    return `<button class="row" data-act="openPerson" data-key="${esc(x.key)}"><span class="emo">${mono({ name: x.name })}</span><span class="grow"><b>${esc(x.name)}</b><small>${plural(x.loans.length, 'préstamo', 'préstamos')} · prestado ${money(x.total)}</small></span><span style="text-align:right"><b>${money(x.pending)}</b><br><span class="badge ${cls}">${esc(txt)}</span></span></button>`;
+  };
+  let body;
+  if (!state.loans.length) body = card('', emptyMsg('Aún no has prestado dinero.<br>Toca ＋ para registrar un préstamo a alguien.'));
+  else if (person) {
+    body = card('', `<button class="link" data-act="closePerson">‹ Todas las personas</button>`) +
+      card(esc(person.name), `
+        <div class="stats">
+          <div class="stat"><small>Prestado</small><b>${money(person.total)}</b></div>
+          <div class="stat"><small>Cobrado</small><b class="pos">${money(person.paid)}</b></div>
+          <div class="stat"><small>Por cobrar</small><b class="${person.pending ? '' : 'pos'}">${money(person.pending)}</b></div>
+        </div>
+        <div class="btn-row"><button class="btn primary small" data-act="addLoan" data-person="${esc(person.name)}">＋ Nuevo préstamo a ${esc(person.name)}</button></div>`) +
+      sortLoans(person.loans).map(l => loanCard(l, false)).join('');
+  } else {
+    body = card('', `<div class="seg" role="group" aria-label="Vista">${[['persons', 'Personas'], ['loans', 'Préstamos']].map(([v, l]) => `<button class="${ui.loanTab === v ? 'on' : ''}" data-act="loanTab" data-tab="${v}">${l}</button>`).join('')}</div>`) +
+      (ui.loanTab === 'persons' ? card(`Personas (${people.length})`, people.map(personRow).join('')) : sortLoans(state.loans).map(l => loanCard(l, true)).join(''));
+  }
+  return head('Préstamos', 'Dinero que has prestado y a quién') +
+    (state.loans.length ? card('', `<div class="stats">
+      <div class="stat"><small>Por cobrar</small><b class="${pend ? '' : 'pos'}">${money(pend)}</b></div>
+      <div class="stat"><small>Prestado</small><b>${money(tot)}</b></div>
+      <div class="stat"><small>Cobrado</small><b class="pos">${money(paid)}</b></div></div>`) : '') +
+    body + fab('addLoan', person ? `data-person="${esc(person.name)}"` : '');
 }
 
 /* ----- Inversiones ----- */
@@ -532,19 +776,25 @@ function sumTx(startISO, endISO) {
   return { inc, exp };
 }
 function yearData(y) {
-  const months = Array.from({ length: 12 }, () => ({ inc: 0, exp: 0 }));
-  const byCat = {};
+  const months = Array.from({ length: 12 }, () => ({ inc: 0, exp: 0, sav: 0, lent: 0, back: 0 }));
+  const byCat = {}, Y = String(y), mi = iso => Number(iso.slice(5, 7)) - 1;
   for (const t of state.transactions) {
-    if (t.date.slice(0, 4) !== String(y)) continue;
-    const m = Number(t.date.slice(5, 7)) - 1;
+    if (t.date.slice(0, 4) !== Y) continue;
+    const m = mi(t.date);
     if (t.type === 'income') months[m].inc += t.amount;
     else { months[m].exp += t.amount; byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount; }
+  }
+  for (const g of state.goals) for (const c of g.contributions) if (c.date.slice(0, 4) === Y) months[mi(c.date)].sav += c.amount;
+  for (const l of state.loans) {
+    if (l.startDate.slice(0, 4) === Y) months[mi(l.startDate)].lent += l.amount;
+    for (const x of l.payments) if (x.date.slice(0, 4) === Y) months[mi(x.date)].back += x.amount;
   }
   const now = new Date(), cy = now.getFullYear();
   const daysInYear = isLeap(y) ? 366 : 365;
   const elapsedDays = y < cy ? daysInYear : y === cy ? daysBetween(`${y}-01-01`, today()) + 1 : 0;
-  const inc = sum(months, m => m.inc), exp = sum(months, m => m.exp);
-  return { y, months, byCat, inc, exp, net: inc - exp, rate: inc > 0 ? (inc - exp) / inc : null, elapsedDays, daysInYear, hasData: inc > 0 || exp > 0 };
+  const inc = sum(months, m => m.inc), exp = sum(months, m => m.exp), sav = sum(months, m => m.sav), lent = sum(months, m => m.lent), back = sum(months, m => m.back);
+  return { y, months, byCat, inc, exp, sav, lent, back, loanNet: lent - back, net: inc - exp, bal: inc - exp - sav - lent + back,
+    rate: inc > 0 ? sav / inc : null, elapsedDays, daysInYear, hasData: inc > 0 || exp > 0 || sav > 0 || lent > 0 || back > 0 };
 }
 const pctChange = (now, before) => (before ? (now - before) / before * 100 : null);
 
@@ -569,7 +819,7 @@ function viewYear() {
   const doneExp = withExp.filter(x => x.i < done);
   const best = doneExp.length > 1 ? doneExp.reduce((p, c) => (c.m.exp < p.m.exp ? c : p)) : null;
   const perDay = d.elapsedDays ? d.exp / d.elapsedDays : 0, perMonth = perDay * d.daysInYear / 12;
-  const saved = sum(state.goals, g => sum(g.contributions.filter(c => c.date.slice(0, 4) === String(y)), c => c.amount));
+  const saved = d.sav;
   const debtPaid = sum(state.debts, x => sum(x.payments.filter(p => p.date.slice(0, 4) === String(y)), p => p.amount));
   const cats = Object.entries(d.byCat).sort((p, q) => q[1] - p[1]).slice(0, 8);
 
@@ -581,15 +831,15 @@ function viewYear() {
     <div class="legend"><span><i class="sw exp"></i>Gastos</span><span><i class="sw inc"></i>Ingresos</span></div>`;
 
   const shown = y < cy ? 12 : cur ? curM + 1 : 0;
-  const rows = d.months.map((m, i) => ({ m, i })).filter(x => x.i < shown || x.m.inc || x.m.exp).map(({ m, i }) => {
-    const empty = !m.inc && !m.exp, net = m.inc - m.exp;
+  const rows = d.months.map((m, i) => ({ m, i })).filter(x => x.i < shown || x.m.inc || x.m.exp || x.m.sav || x.m.lent || x.m.back).map(({ m, i }) => {
+    const empty = !m.inc && !m.exp && !m.sav && !m.lent && !m.back, net = m.inc - m.exp - m.sav - m.lent + m.back;
     return `<div class="yrow"><span>${cap(mon3(i))}</span><span>${empty ? '—' : money(m.inc)}</span><span>${empty ? '—' : money(m.exp)}</span><span class="${empty ? '' : net < 0 ? 'neg' : 'pos'}">${empty ? '—' : money(net)}</span></div>`;
   }).join('');
   const table = `<div class="ytable"><div class="yrow head"><span>Mes</span><span>Ingresos</span><span>Gastos</span><span>Balance</span></div>${rows}
-    <div class="yrow tot"><span>Total</span><span>${money(d.inc)}</span><span>${money(d.exp)}</span><span class="${d.net < 0 ? 'neg' : 'pos'}">${money(d.net)}</span></div></div>`;
+    <div class="yrow tot"><span>Total</span><span>${money(d.inc)}</span><span>${money(d.exp)}</span><span class="${d.bal < 0 ? 'neg' : 'pos'}">${money(d.bal)}</span></div></div>`;
 
   const goalsTotal = sum(state.goals, goalSaved), invCur = sum(state.investments, i => i.current), invIn = sum(state.investments, i => i.invested), owed = sum(state.debts, debtRemaining);
-  const net = goalsTotal + invCur - owed;
+  const receivable = sum(state.loans, loanRemaining), net = goalsTotal + invCur + receivable - owed;
 
   return head('Resumen anual', 'Indicadores clave del año') +
     card('', `
@@ -601,9 +851,12 @@ function viewYear() {
       ${d.hasData ? `<div class="stats two" style="margin-top:12px">
         <div class="stat"><small>Ingresos</small><b class="pos">${money(d.inc)}</b></div>
         <div class="stat"><small>Gastos</small><b>${money(d.exp)}</b></div>
-        <div class="stat"><small>Ahorro neto</small><b class="${d.net < 0 ? 'neg' : 'pos'}">${money(d.net)}</b></div>
-        <div class="stat"><small>Tasa de ahorro</small><b class="${d.rate !== null && d.rate < 0 ? 'neg' : 'pos'}">${d.rate === null ? '—' : `${(d.rate * 100).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`}</b></div>
-      </div>` : ''}`) +
+        <div class="stat"><small>Ahorrado en metas</small><b class="pos">${money(d.sav)}</b></div>
+        <div class="stat"><small>Tasa de ahorro</small><b>${d.rate === null ? '—' : `${(d.rate * 100).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`}</b></div>
+        <div class="stat"><small>Préstamos (neto)</small><b>${money(d.loanNet)}</b></div>
+        <div class="stat"><small>Balance del año</small><b class="${d.bal < 0 ? 'neg' : 'pos'}">${money(d.bal)}</b></div>
+      </div>
+      <p class="muted small" style="margin-top:8px">Balance = ingresos − gastos − ahorros − préstamos netos. Tasa de ahorro = ahorrado ÷ ingresos.</p>` : ''}`) +
     (!d.hasData ? card('', emptyMsg(`No hay movimientos registrados en ${y}.`)) : `
     ${card('Gastos e ingresos por mes', chart + table)}
     ${card('Indicadores', `
@@ -619,18 +872,20 @@ function viewYear() {
     ${cats.length ? card('Dónde se fue el dinero', cats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(d.exp ? v / d.exp * 100 : 0)}%</span></div>${bar(d.exp ? v / d.exp * 100 : 0)}</div>`).join('')) : ''}
     ${card(`Ahorro y deudas en ${y}`, `
       <div class="kv"><span>Ahorrado en metas</span><b class="pos">${money(saved)}</b></div>
-      <div class="kv"><span>Pagos de deudas</span><b>${money(debtPaid)}</b></div>`)}`) +
+      <div class="kv"><span>Pagos de deudas</span><b>${money(debtPaid)}</b></div>
+      ${d.lent || d.back ? `<div class="kv"><span>Préstamos entregados</span><b>${money(d.lent)}</b></div><div class="kv"><span>Cobros recibidos</span><b class="pos">${money(d.back)}</b></div>` : ''}`)}`) +
     (cur ? card('Situación actual', `
       <div class="kv"><span>Ahorrado en metas</span><b>${money(goalsTotal)}</b></div>
       <div class="kv"><span>Inversiones (valor actual)</span><b>${money(invCur)}${invIn ? ` · ${fmtPct(pctChange(invCur, invIn))}` : ''}</b></div>
+      ${receivable ? `<div class="kv"><span>Préstamos por cobrar</span><b>${money(receivable)}</b></div>` : ''}
       <div class="kv"><span>Deudas pendientes</span><b class="${owed ? 'neg' : ''}">${money(owed)}</b></div>
       <div class="kv"><span>Posición neta registrada</span><b class="${net < 0 ? 'neg' : 'pos'}">${money(net)}</b></div>
-      <p class="muted small" style="margin-top:6px">Ahorros en metas + inversiones − deudas, según lo que has registrado en la app.</p>`) : '');
+      <p class="muted small" style="margin-top:6px">Ahorros en metas + inversiones + préstamos por cobrar − deudas, según lo que has registrado en la app.</p>`) : '');
 }
 
 /* ----- Más ----- */
 function viewMore() {
-  const items = [['deudas', ICON.deudas, 'Deudas', 'Saldos, cuotas y vencimientos'], ['inversiones', ICON.inversiones, 'Inversiones', 'Lo que has invertido y su resultado'],
+  const items = [['deudas', ICON.deudas, 'Deudas', 'Saldos, cuotas y vencimientos'], ['prestamos', ICON.prestamos, 'Préstamos', 'Lo que has prestado y a quién'], ['inversiones', ICON.inversiones, 'Inversiones', 'Lo que has invertido y su resultado'],
     ['anual', ICON.anual, 'Resumen anual', 'Indicadores clave del año'], ['ajustes', ICON.ajustes, 'Ajustes', 'Perfil, preferencias y respaldo']];
   return head('Más', 'Otras secciones') +
     card('', items.map(([k, i, t, s]) => `<a class="row" href="#/${k}"><span class="emo">${i}</span><span class="grow"><b>${t}</b><small>${s}</small></span><span class="muted" aria-hidden="true">›</span></a>`).join(''));
@@ -650,6 +905,10 @@ function viewSettings() {
       <div class="field"><label>Moneda</label><select data-setting="currency">${opt(CURRENCIES.map(c => [c, c]), st.currency)}</select></div>
       <div class="field"><label>Vista por defecto de gastos y resumen</label><select data-setting="periodMode">${opt([['week', 'Semanal'], ['fortnight', 'Quincenal (1–15 y 16–fin de mes)'], ['month', 'Mensual']], st.periodMode)}</select></div>
       <div class="field"><label>La semana empieza el</label><select data-setting="weekStart">${opt([[1, 'Lunes'], [0, 'Domingo']], st.weekStart)}</select></div>`) +
+    card('Avisos', `
+      <p class="muted">Los avisos aparecen arriba al abrir la app. Los de cobros, vencimientos y ahorro se quedan hasta que los cierres con la ✕.</p>
+      ${[['loans', 'Cobros de préstamos'], ['debts', 'Vencimientos de deudas'], ['savings', 'Avisos de ahorro'], ['birthday', 'Cumpleaños']].map(([k, l]) => `<label class="check"><input type="checkbox" data-notify="${k}" ${(st.notify || {})[k] !== false ? 'checked' : ''}> ${l}</label>`).join('')}
+      <div class="btn-row"><button class="btn small" data-act="resetNotices">Volver a mostrar avisos cerrados</button></div>`) +
     card('Categorías', state.categories.map(catRow).join('') + '<div class="btn-row"><button class="btn small" data-act="addCat">＋ Nueva categoría</button></div>') +
     card('Respaldo de datos', `
       <p class="muted">Tus datos se guardan en este dispositivo. Un respaldo en archivo sirve de copia de seguridad (y para pasar datos si no usas la sincronización).</p>
@@ -703,37 +962,114 @@ function openTxForm(tx, type = 'expense') {
   });
 }
 
-function openGoalForm(g) {
-  const isEdit = !!g;
+function openGoalForm(g, opts = {}) {
+  const isEdit = !!g, monthlyMode = !isEdit && opts.mode === 'monthly';
+  const fields = monthlyMode ? [
+    { name: 'name', label: 'Nombre del ahorro', required: true, placeholder: 'Ej: Ahorro mensual' },
+    { name: 'monthly', label: 'Monto a ahorrar cada mes', type: 'number', required: true, min: 1 },
+    { name: 'target', label: 'Meta total (opcional · si lo dejas vacío son 12 meses)', type: 'number', min: 1 },
+    { name: 'deadline', label: 'Fecha objetivo (opcional)', type: 'date' },
+    { name: 'reminderDay', label: 'Aviso de ahorro: día del mes (opcional, 1 a 31)', type: 'number', min: 1 }
+  ] : [
+    { name: 'name', label: 'Nombre de la meta', required: true, placeholder: 'Ej: Fondo de emergencia' },
+    { name: 'target', label: 'Monto objetivo', type: 'number', required: true, min: 1 },
+    { name: 'monthly', label: 'Ahorro mensual planificado (opcional)', type: 'number', min: 0 },
+    { name: 'deadline', label: 'Fecha objetivo (opcional)', type: 'date' },
+    { name: 'reminderDay', label: 'Aviso de ahorro: día del mes (opcional, 1 a 31)', type: 'number', min: 1 }
+  ];
   openForm({
-    title: isEdit ? 'Editar meta' : 'Nueva meta',
-    fields: [
-      { name: 'name', label: 'Nombre de la meta', required: true, placeholder: 'Ej: Fondo de emergencia' },
-      { name: 'target', label: 'Monto objetivo', type: 'number', required: true, min: 1 },
-      { name: 'deadline', label: 'Fecha objetivo (opcional)', type: 'date' }
-    ],
-    values: g || {}, focus: isEdit ? '' : 'name',
+    title: isEdit ? 'Editar meta' : monthlyMode ? 'Nuevo ahorro mensual' : 'Nueva meta',
+    note: monthlyMode ? 'Cada ahorro que registres se descuenta de tu saldo del mes y cuenta para este plan.' : '',
+    fields, values: g || (monthlyMode ? { name: 'Ahorro mensual' } : {}), focus: isEdit ? '' : monthlyMode ? 'monthly' : 'name',
+    validate: d => (d.reminderDay !== null && (!Number.isInteger(d.reminderDay) || d.reminderDay < 1 || d.reminderDay > 31) ? 'El día del aviso debe ser un número entre 1 y 31' : null),
     onSubmit: d => {
-      if (isEdit) Object.assign(g, { name: d.name, target: d.target, deadline: d.deadline });
-      else state.goals.push({ id: uid(), name: d.name, target: d.target, deadline: d.deadline, contributions: [] });
-      save(); render(true); toast('Meta guardada');
+      const target = d.target || (monthlyMode ? d.monthly * 12 : 0), monthly = d.monthly || 0, reminderDay = d.reminderDay || 0;
+      let goal = g;
+      if (isEdit) {
+        const changed = reminderDay !== (g.reminderDay || 0);
+        Object.assign(g, { name: d.name, target, monthly, deadline: d.deadline, reminderDay });
+        if (changed) g.reminderSince = today(); // el aviso vale desde el día en que lo configuras
+      } else { goal = { id: uid(), name: d.name, target, monthly, deadline: d.deadline, reminderDay, reminderSince: reminderDay ? today() : '', contributions: [] }; state.goals.push(goal); }
+      save(); render(true); toast(monthlyMode ? 'Ahorro mensual creado' : 'Meta guardada');
+      if (opts.thenSave && !isEdit) setTimeout(() => openSavingForm(goal), 0); // al terminar de crear, registra el primer ahorro
     },
     onDelete: isEdit ? () => {
-      if (!confirm(`¿Eliminar la meta "${g.name}" y su historial de ahorros?`)) return;
+      if (!confirm(`¿Eliminar la meta "${g.name}" y su historial de ahorros? Esto también cambia tu saldo y tus resúmenes.`)) return;
       state.goals = state.goals.filter(x => x.id !== g.id); save(); closeModal(); render(true);
     } : null
   });
 }
+/* Registrar un ahorro. Con g=null se elige la meta; si no hay ninguna, se ofrece crearla. */
 function openSavingForm(g) {
+  if (!g) {
+    if (!state.goals.length) { openGoalForm(null, { mode: 'monthly', thenSave: true }); return; }
+    const open = state.goals.filter(x => goalInfo(x).left > 0);
+    const pick = (open.find(x => x.monthly > 0 && goalMonthSaved(x) < x.monthly) || open[0] || state.goals[0]);
+    return openSavingFormFor(null, pick);
+  }
+  openSavingFormFor(g, g);
+}
+function openSavingFormFor(fixed, pick) {
+  const monthly = pick.monthly > 0 ? Math.max(0, pick.monthly - goalMonthSaved(pick)) : 0;
+  const fields = [];
+  if (!fixed) fields.push({ name: 'goalId', label: 'Meta o ahorro', type: 'select', options: state.goals.map(x => ({ value: x.id, label: x.name })) });
+  fields.push({ name: 'amount', label: 'Monto ahorrado', type: 'number', required: true, min: 0.01 }, { name: 'date', label: 'Fecha', type: 'date', required: true }, { name: 'note', label: 'Nota (opcional)', type: 'text' });
   openForm({
-    title: `Registrar ahorro · ${g.name}`,
+    title: fixed ? `Registrar ahorro · ${fixed.name}` : 'Nuevo ahorro',
+    note: 'El ahorro se descuenta de tu saldo del mes.',
+    fields, values: { goalId: pick.id, date: today(), amount: monthly || '' }, focus: 'amount', submitLabel: 'Registrar',
+    onSubmit: d => {
+      const g = fixed || state.goals.find(x => x.id === d.goalId);
+      if (!g) return;
+      g.contributions.push({ id: uid(), date: d.date, amount: d.amount, note: d.note });
+      save(); render(true); toast('Ahorro registrado');
+    }
+  });
+}
+
+/* ----- Préstamos ----- */
+function openLoanForm(l, person = '') {
+  const isEdit = !!l, paid = isEdit ? loanPaid(l) : 0;
+  openForm({
+    title: isEdit ? 'Editar préstamo' : 'Nuevo préstamo',
+    note: isEdit ? `Cobrado hasta ahora: ${money(paid)}.` : 'El dinero prestado se descuenta de tu saldo en la fecha del préstamo y vuelve cuando registres los cobros.',
     fields: [
-      { name: 'amount', label: 'Monto ahorrado', type: 'number', required: true, min: 0.01 },
-      { name: 'date', label: 'Fecha', type: 'date', required: true },
+      { name: 'person', label: 'Nombre de la persona', required: true, placeholder: 'Ej: Pedro', datalist: loanPeople().map(x => x.name) },
+      { name: 'amount', label: 'Monto prestado', type: 'number', required: true, min: 1 },
+      { name: 'startDate', label: 'Fecha del préstamo', type: 'date', required: true },
+      { name: 'dueDate', label: 'Fecha de cobro (opcional)', type: 'date' },
+      { name: 'note', label: 'Nota (opcional)', type: 'text', placeholder: 'Ej: para el arriendo' }
+    ],
+    values: l || { person, startDate: today() }, focus: isEdit ? '' : person ? 'amount' : 'person', submitLabel: isEdit ? 'Guardar' : 'Registrar',
+    validate: d => {
+      if (d.person.length > 40) return 'El nombre es demasiado largo (máx. 40 letras)';
+      if (d.dueDate && d.dueDate < d.startDate) return 'La fecha de cobro no puede ser anterior a la del préstamo';
+      if (isEdit && d.amount < paid) return `El monto no puede ser menor a lo ya cobrado (${money(paid)})`;
+      return null;
+    },
+    onSubmit: d => {
+      const rec = { person: d.person, amount: d.amount, startDate: d.startDate, dueDate: d.dueDate || '', note: d.note };
+      if (isEdit) Object.assign(l, rec); else state.loans.push({ id: uid(), createdAt: Date.now(), payments: [], ...rec });
+      save(); render(true); toast(isEdit ? 'Préstamo guardado' : 'Préstamo registrado');
+    },
+    onDelete: isEdit ? () => {
+      if (!confirm(`¿Eliminar el préstamo a ${l.person} y sus cobros? Esto también cambia tu saldo y tus resúmenes.`)) return;
+      state.loans = state.loans.filter(x => x.id !== l.id); save(); closeModal(); render(true);
+    } : null
+  });
+}
+function openLoanPayForm(l) {
+  const rem = loanRemaining(l);
+  openForm({
+    title: `Cobro · ${l.person}`, note: `Por cobrar: ${money(rem)}. El cobro suma a tu saldo en la fecha indicada.`,
+    fields: [
+      { name: 'amount', label: 'Monto cobrado', type: 'number', required: true, min: 0.01 },
+      { name: 'date', label: 'Fecha del cobro', type: 'date', required: true },
       { name: 'note', label: 'Nota (opcional)', type: 'text' }
     ],
-    values: { date: today() }, focus: 'amount', submitLabel: 'Registrar',
-    onSubmit: d => { g.contributions.push({ id: uid(), date: d.date, amount: d.amount, note: d.note }); save(); render(true); toast('Ahorro registrado'); }
+    values: { amount: rem, date: today() }, focus: 'amount', submitLabel: 'Registrar cobro',
+    validate: d => (d.amount > rem + 0.001 ? `No puede superar lo que falta por cobrar (${money(rem)})` : d.date < l.startDate ? 'El cobro no puede ser anterior al préstamo' : null),
+    onSubmit: d => { l.payments.push({ id: uid(), date: d.date, amount: d.amount, note: d.note }); save(); render(true); toast('Cobro registrado'); }
   });
 }
 
@@ -886,6 +1222,11 @@ function demoData() {
   s.debts.push(
     { id: uid(), name: 'Tarjeta de crédito', creditor: 'Banco', total: 480000, installment: 80000, nextDue: addDays(t, 4), recurring: true, payments: [] },
     { id: uid(), name: 'Crédito de consumo', creditor: 'Banco', total: 900000, installment: 75000, nextDue: addDays(t, -2), recurring: true, payments: [{ id: uid(), date: addDays(t, -32), amount: 75000 }] });
+  s.goals[0].monthly = 100000;
+  s.goals[0].contributions.push({ id: uid(), date: t, amount: 60000, note: 'Ahorro del mes' });
+  s.loans.push(
+    { id: uid(), createdAt: Date.now(), person: 'Pedro', amount: 150000, startDate: addDays(t, -20), dueDate: addDays(t, 10), note: 'Para el arriendo', payments: [{ id: uid(), date: addDays(t, -5), amount: 50000, note: '' }] },
+    { id: uid(), createdAt: Date.now(), person: 'Ana', amount: 40000, startDate: addDays(t, -45), dueDate: addDays(t, -5), note: '', payments: [] });
   s.investments.push(
     { id: uid(), name: 'Fondo mutuo balanceado', kind: 'Fondos mutuos', invested: 500000, current: 534000, date: addDays(t, -200), note: '', history: [] },
     { id: uid(), name: 'Acciones', kind: 'Acciones', invested: 300000, current: 289500, date: addDays(t, -120), note: '', history: [] },
@@ -902,10 +1243,6 @@ function isBirthdayToday() {
   const bd = (bm === 2 && bd0 === 29 && !isLeap(y)) ? 28 : bd0; // 29 de febrero → 28 en años no bisiestos
   return n.getMonth() + 1 === bm && n.getDate() === bd;
 }
-function birthdayBanner() {
-  const age = new Date().getFullYear() - Number(state.profile.birthdate.slice(0, 4));
-  return `<div class="birthday" role="status"><span class="cake" aria-hidden="true">🎂</span><div><b>¡Feliz cumpleaños, ${esc(state.profile.name)}!</b><p>${age > 0 ? `Hoy cumples ${plural(age, 'año', 'años')}. ` : ''}Que tengas un día increíble 🎉</p></div><button class="bday-x" data-act="closeBirthday" aria-label="Cerrar saludo">✕</button></div>`;
-}
 function openProfileForm(first = false) {
   openForm({
     title: first ? '¡Bienvenido/a! 👋' : 'Editar perfil',
@@ -921,7 +1258,7 @@ function openProfileForm(first = false) {
       if (d.birthdate < '1900-01-01' || d.birthdate > today()) return 'Revisa la fecha de nacimiento';
       return null;
     },
-    onSubmit: d => { state.profile = { name: d.name, birthdate: d.birthdate }; save(); render(true); toast(first ? `¡Hola, ${d.name}!` : 'Perfil actualizado'); }
+    onSubmit: d => { state.profile = { name: d.name, birthdate: d.birthdate }; if (first) { N.intro = true; saveNotices(); } save(); render(true); toast(first ? `¡Hola, ${d.name}!` : 'Perfil actualizado'); }
   });
 }
 
@@ -1048,7 +1385,8 @@ const actions = {
   syncNow: () => { if (cloud.engine) { cloud.engine.pushNow(); toast('Sincronizando…'); } },
   syncLogout: () => { if (cloud.remote && confirm('¿Cerrar sesión? Tus datos seguirán en este dispositivo, pero dejarán de sincronizarse.\n\nSi después entras con OTRA cuenta, los datos de este dispositivo se combinarán con ella.')) cloud.remote.signOut(); },
   yearShift: d => { ui.year += Number(d.dir); render(true); },
-  closeBirthday: () => { ui.bdayClosed = true; render(true); },
+  dismissNotice: d => { N.dismissed[d.key] = today(); saveNotices(); render(true); },
+  resetNotices: () => { N = { dismissed: {}, shown: {}, intro: false }; saveNotices(); render(true); toast('Los avisos cerrados volverán a mostrarse si corresponden'); },
   editProfile: () => openProfileForm(false),
   setMode: d => { state.settings.periodMode = d.mode; save(); render(true); },
   shift: d => { const mode = state.settings.periodMode; ui.refDate = shiftPeriod(mode, periodOf(mode, ui.refDate), Number(d.dir)).start; render(true); },
@@ -1066,9 +1404,18 @@ const actions = {
     state.budgets[key] = { ...src }; save(); render(true); toast('Presupuesto copiado');
   },
   addGoal: () => openGoalForm(null),
+  addMonthly: () => openGoalForm(null, { mode: 'monthly' }),
+  addSavingQuick: () => openSavingForm(null),
+  addLoan: d => openLoanForm(null, d.person || ''),
+  editLoan: d => { const l = state.loans.find(x => x.id === d.id); if (l) openLoanForm(l); },
+  payLoan: d => { const l = state.loans.find(x => x.id === d.id); if (l) openLoanPayForm(l); },
+  delLoanPay: d => { const l = state.loans.find(x => x.id === d.id); if (l && confirm('¿Eliminar este cobro? El monto volverá a figurar como pendiente.')) { l.payments = l.payments.filter(p => p.id !== d.pid); save(); render(true); } },
+  loanTab: d => { ui.loanTab = d.tab; ui.loanPerson = null; render(true); },
+  openPerson: d => { ui.loanPerson = d.key; render(); },
+  closePerson: () => { ui.loanPerson = null; render(); },
   editGoal: d => { const g = state.goals.find(x => x.id === d.id); if (g) openGoalForm(g); },
   addSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g) openSavingForm(g); },
-  delSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g && confirm('¿Eliminar este ahorro?')) { g.contributions = g.contributions.filter(c => c.id !== d.cid); save(); render(true); } },
+  delSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g && confirm('¿Eliminar este ahorro? Volverá a sumarse a tu saldo del mes.')) { g.contributions = g.contributions.filter(c => c.id !== d.cid); save(); render(true); } },
   addDebt: () => openDebtForm(null),
   editDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) openDebtForm(x); },
   payDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) openPayForm(x); },
@@ -1087,14 +1434,14 @@ const actions = {
 /* =========================================================
    ENRUTADOR Y ARRANQUE
    ========================================================= */
-const routes = { home: viewHome, gastos: viewTx, presupuesto: viewBudget, metas: viewGoals, deudas: viewDebts, inversiones: viewInv, anual: viewYear, mas: viewMore, ajustes: viewSettings };
+const routes = { home: viewHome, gastos: viewTx, presupuesto: viewBudget, metas: viewGoals, deudas: viewDebts, prestamos: viewLoans, inversiones: viewInv, anual: viewYear, mas: viewMore, ajustes: viewSettings };
 // [ruta, ícono, texto, clase]. En el celular se ven 5 pestañas (la última, "Más", agrupa el resto); en PC se ven todas.
 const NAV = [
   ['home', ICON.home, 'Inicio', ''], ['gastos', ICON.gastos, 'Gastos', ''], ['presupuesto', ICON.presupuesto, 'Presupuesto', ''], ['metas', ICON.metas, 'Metas', ''],
-  ['deudas', ICON.deudas, 'Deudas', 'only-desktop'], ['inversiones', ICON.inversiones, 'Inversiones', 'only-desktop'], ['anual', ICON.anual, 'Resumen anual', 'only-desktop'], ['ajustes', ICON.ajustes, 'Ajustes', 'only-desktop'],
+  ['deudas', ICON.deudas, 'Deudas', 'only-desktop'], ['prestamos', ICON.prestamos, 'Préstamos', 'only-desktop'], ['inversiones', ICON.inversiones, 'Inversiones', 'only-desktop'], ['anual', ICON.anual, 'Resumen anual', 'only-desktop'], ['ajustes', ICON.ajustes, 'Ajustes', 'only-desktop'],
   ['mas', ICON.mas, 'Más', 'only-mobile']
 ];
-const MORE = ['mas', 'deudas', 'inversiones', 'anual', 'ajustes'];
+const MORE = ['mas', 'deudas', 'prestamos', 'inversiones', 'anual', 'ajustes'];
 function currentRoute() {
   const r = location.hash.replace(/^#\/?/, '') || 'home';
   return routes[r] ? r : 'home';
@@ -1105,7 +1452,7 @@ function render(keepScroll) {
     const on = k === r || (k === 'mas' && MORE.includes(r));
     return `<a href="#/${k}" class="${on ? 'active' : ''} ${cls}" ${on ? 'aria-current="page"' : ''}><span class="ico">${i}</span><span class="lbl">${l}</span></a>`;
   }).join('');
-  const banner = isBirthdayToday() && !ui.bdayClosed ? birthdayBanner() : '';
+  const banner = noticesHTML();
   try { $('#view').innerHTML = banner + `<div id="syncBanner">${syncBannerHTML()}</div>` + routes[r](); }
   catch (e) { console.error(e); $('#view').innerHTML = card('Ocurrió un error', `<p class="muted">No se pudo mostrar esta pantalla (${esc(e.message)}).</p>`); }
   document.title = `${NAV.find(n => n[0] === r)[2]} · Mis Finanzas`;
@@ -1123,6 +1470,7 @@ function fitStats() {
   });
 }
 window.addEventListener('resize', fitStats);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && ui.day !== today()) { ui.day = today(); render(true); } });
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
@@ -1132,6 +1480,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'importFile' && t.files && t.files[0]) { importFile(t.files[0]); t.value = ''; return; }
+  if (t.dataset && t.dataset.notify) { state.settings.notify = { ...(state.settings.notify || {}), [t.dataset.notify]: t.checked }; save(); render(true); return; }
   if (t.dataset && t.dataset.setting) {
     const k = t.dataset.setting;
     state.settings[k] = k === 'weekStart' ? Number(t.value) : t.value;
