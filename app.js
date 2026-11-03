@@ -909,7 +909,7 @@ function birthdayBanner() {
 function openProfileForm(first = false) {
   openForm({
     title: first ? '¡Bienvenido/a! 👋' : 'Editar perfil',
-    note: first ? 'Cuéntanos quién eres para personalizar la app. Estos datos se guardan en tu dispositivo.' : '',
+    note: first ? 'Cuéntanos quién eres para personalizar la app. Estos datos se guardan en tu dispositivo.' + (cloud.user ? `<br><br><b>Sesión iniciada como ${esc(cloud.user.email || '')}.</b> Esta cuenta todavía no tiene datos guardados en la nube. Si ya usas la app en otro dispositivo, abre Ajustes → Sincronización allá y revisa el estado.` : '') : '',
     fields: [
       { name: 'name', label: 'Tu nombre', required: true, placeholder: 'Ej: Felipe' },
       { name: 'birthdate', label: 'Fecha de nacimiento', type: 'date', required: true, min: '1900-01-01', max: today() }
@@ -958,10 +958,25 @@ function syncCardInner() {
   if (cloud.phase === 'loading') return intro + '<p class="muted">Conectando…</p>';
   if (!cloud.user) return intro + '<div class="btn-row"><button class="btn primary small" data-act="syncLogin">Iniciar sesión</button><button class="btn small" data-act="syncSignup">Crear cuenta</button><button class="btn small" data-act="syncReset">Olvidé mi contraseña</button></div>';
   const bad = cloud.status.state === 'error';
-  return `<div class="kv"><span>Cuenta</span><b>${esc(cloud.user.email || '')}</b></div><div class="kv"><span>Estado</span><b><span class="badge ${bad ? 'warn' : cloud.status.state === 'ok' ? 'ok' : ''}">${esc(syncStatusText())}</span></b></div>` +
+  return `<div class="kv"><span>Cuenta</span><b>${esc(cloud.user.email || '')}</b></div><div class="kv"><span>Registros en la nube</span><b>${cloud.engine ? cloud.engine.stats().known : 0}</b></div><div class="kv"><span>Pendientes por subir</span><b>${cloud.engine ? cloud.engine.stats().pending : 0}</b></div><div class="kv"><span>Estado</span><b><span class="badge ${bad ? 'warn' : cloud.status.state === 'ok' ? 'ok' : ''}">${esc(syncStatusText())}</span></b></div>` +
     '<div class="btn-row"><button class="btn small" data-act="syncNow">Sincronizar ahora</button><button class="btn small" data-act="syncLogout">Cerrar sesión</button></div>';
 }
-function updateSyncCard() { const el = $('#syncBody'); if (el) el.innerHTML = syncCardInner(); }
+function updateSyncCard() {
+  const el = $('#syncBody'); if (el) el.innerHTML = syncCardInner();
+  const b = $('#syncBanner'); if (b) b.innerHTML = syncBannerHTML();
+}
+// Aviso visible en todas las pantallas cuando la sincronización está fallando
+function syncBannerHTML() {
+  if (!cloud.user || cloud.status.state !== 'error') return '';
+  return `<a class="sync-warn" href="#/ajustes"><b>La sincronización no está funcionando.</b> ${esc(syncStatusText())}. Toca para ver detalles.</a>`;
+}
+// Mientras se confirma si hay una cuenta con datos, no se pide el perfil (evita pedir nombre y fecha dos veces)
+function waitingForCloud() {
+  if (cloud.waitDone) return false;
+  if (cloud.phase === 'loading') return true;
+  if (cloud.phase === 'ready' && cloud.user && cloud.engine && !cloud.engine.initialPulled && cloud.status.state !== 'error') return true;
+  return false;
+}
 
 function openAuthForm(mode) {
   const email = { name: 'email', label: 'Correo electrónico', type: 'email', required: true, autocomplete: 'username', placeholder: 'tu@correo.com' };
@@ -1002,17 +1017,18 @@ function initSync() {
       getState: () => state, remote, storage: localStorage,
       onRemoteChange: () => { persistLocal(); render(true); },
       onInitialPull: () => { persistLocal(); if (state.profile && modalLocked) closeModal(); render(true); },
-      onStatus: st => { cloud.status = st; updateSyncCard(); }
+      onStatus: st => { cloud.status = st; updateSyncCard(); if (st.state === 'error' && !state.profile && !modalLocked) render(true); }
     });
     cloud.phase = 'ready';
     remote.onAuth(user => {
       cloud.user = user;
       cloud.status = { state: 'syncing', last: 0, message: '' };
-      if (user) cloud.engine.start(user.uid); else cloud.engine.stop();
+      if (user) cloud.engine.start(user.uid); else { cloud.engine.stop(); if (!state.profile && !modalLocked) render(true); }
       updateSyncCard();
     });
     updateSyncCard();
-  }).catch(e => { cloud.phase = 'failed'; cloud.error = (e && e.message) || ''; cloud.remote = null; updateSyncCard(); });
+  }).catch(e => { cloud.phase = 'failed'; cloud.error = (e && e.message) || ''; cloud.remote = null; updateSyncCard(); if (!state.profile && !modalLocked) render(true); });
+  setTimeout(() => { cloud.waitDone = true; if (!state.profile && !modalLocked) render(true); }, 8000); // si la nube no responde, se sigue sin ella
 }
 window.addEventListener('online', () => { if (cloud.phase === 'failed') initSync(); else if (cloud.engine) cloud.engine.pushNow(); });
 
@@ -1090,12 +1106,12 @@ function render(keepScroll) {
     return `<a href="#/${k}" class="${on ? 'active' : ''} ${cls}" ${on ? 'aria-current="page"' : ''}><span class="ico">${i}</span><span class="lbl">${l}</span></a>`;
   }).join('');
   const banner = isBirthdayToday() && !ui.bdayClosed ? birthdayBanner() : '';
-  try { $('#view').innerHTML = banner + routes[r](); }
+  try { $('#view').innerHTML = banner + `<div id="syncBanner">${syncBannerHTML()}</div>` + routes[r](); }
   catch (e) { console.error(e); $('#view').innerHTML = card('Ocurrió un error', `<p class="muted">No se pudo mostrar esta pantalla (${esc(e.message)}).</p>`); }
   document.title = `${NAV.find(n => n[0] === r)[2]} · Mis Finanzas`;
   window.scrollTo(0, keepScroll === true ? y : 0);
   fitStats();
-  if (!state.profile && !modalLocked) openProfileForm(true); // primer uso: pedir nombre y fecha de nacimiento
+  if (!state.profile && !modalLocked && !waitingForCloud()) openProfileForm(true); // primer uso: pedir nombre y fecha de nacimiento
 }
 
 // Reacomoda las tarjetas de 3 cifras cuando un monto no cabe (pantallas angostas o montos muy grandes)

@@ -87,6 +87,11 @@
       if (this.onStatus) this.onStatus({ state, last: this.last, message: message ? String(message.message || message) : '', code: (message && message.code) || '' });
     }
 
+    stats() {
+      if (!this.meta) return { known: 0, pending: 0 };
+      return { known: Object.values(this.meta.base).filter(b => b.h !== null).length, pending: Object.keys(this.meta.dirty).length };
+    }
+
     /* ---- ciclo de vida ---- */
     start(uid) {
       this.stop();
