@@ -76,3 +76,12 @@ Los datos se guardan primero en el dispositivo (almacenamiento del navegador). S
 | `manifest.webmanifest` | Datos para instalar como app |
 | `sw.js` | Funcionamiento sin conexión |
 | `icon.svg`, `icon-*.png` | Íconos |
+
+## Comodidad de uso
+- **Registro rápido**: los montos se escriben con teclado numérico y separador de miles; categorías frecuentes como botones; “Hoy / Ayer” en las fechas; **Repetir hoy** en cualquier movimiento.
+- **Gastos e ingresos fijos** (Presupuesto → “Gastos e ingresos fijos”, o marcando “Repetir cada mes” al crear un movimiento): se registran solos el día elegido, se ponen al día si no abres la app y no se duplican entre dispositivos.
+- **Deshacer**: eliminar es inmediato y aparece “Deshacer” por unos segundos.
+- **Búsqueda en Gastos** por nota, categoría o monto (periodo actual o todo el historial) y filtro por categoría.
+- **Primeros pasos** en Inicio, **presupuesto sugerido** (promedio de tus últimos meses) y **“Puedes gastar $X por día”** (descuenta los fijos que aún no llegan).
+- **Bloqueo con PIN** (4 o 6 números) y **huella / Face ID** opcional, en Ajustes → Seguridad. Es un candado de pantalla por dispositivo; si olvidas el PIN se borran los datos de ese dispositivo (se recuperan con tu cuenta de sincronización).
+- **Deslizar una fila a la izquierda** para eliminarla, **arrastrar hacia abajo** para sincronizar, **indicador de sincronización** arriba a la derecha, **gráfico de dona por categoría** con comparación contra el periodo anterior y **recordatorio de copia de seguridad** (si no usas sincronización).

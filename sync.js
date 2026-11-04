@@ -13,7 +13,7 @@
    Los borrados se propagan con una "lápida" (deleted: true).
    ========================================================= */
 (function (root) {
-  const ARRAY_KINDS = ['transactions', 'categories', 'goals', 'debts', 'investments', 'loans', 'notices'];
+  const ARRAY_KINDS = ['transactions', 'categories', 'goals', 'debts', 'investments', 'loans', 'notices', 'recurring'];
   const FB_VERSION = '13.1.0'; // versión del SDK que usa la documentación oficial de Firebase
 
   /* ---------- Utilidades ---------- */
