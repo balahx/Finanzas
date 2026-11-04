@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '14'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '15'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -206,6 +206,20 @@ const ICON = {
 // Símbolo "Órbita + Sigma" (versión para fondo burdeos)
 const LOGO = s => `<svg width="${s}" height="${s}" viewBox="-6 -6 112 112" aria-hidden="true"><circle cx="50" cy="50" r="40" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-dasharray="190 61" transform="rotate(-40 50 50)"/><circle cx="54.18" cy="10.22" r="7.5" fill="#D9B26F"/><path d="M64 34 H36 L52 50 L36 66 H64" fill="none" stroke="#F1E9DC" stroke-width="7.5" stroke-linejoin="miter"/></svg>`;
 const mono = (c, sm) => `<span class="mono${sm ? ' sm' : ''}" aria-hidden="true">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</span>`;
+/* Saludo según la hora. Horario de Chile: verano (primer domingo de septiembre → primer domingo de abril) y invierno el resto. */
+const firstSunday = (y, m) => { const d = new Date(y, m, 1); d.setDate(1 + (7 - d.getDay()) % 7); return d; };
+function isSummerTime(d = new Date()) {
+  const y = d.getFullYear(), day = new Date(y, d.getMonth(), d.getDate());
+  return day < firstSunday(y, 3) || day >= firstSunday(y, 8);
+}
+function greetingParts(d = new Date()) {
+  const h = d.getHours(), eveningFrom = isSummerTime(d) ? 20 : 18;
+  if (h >= 5 && h < 12) return { text: 'Buenos Días', emoji: '☀️' };
+  if (h >= 12 && h < eveningFrom) return { text: 'Buenas Tardes', emoji: '🌤️' };
+  return { text: 'Buenas Noches', emoji: '🌙' };
+}
+const greetingTitle = (d = new Date()) => { const g = greetingParts(d), nm = state.profile && state.profile.name ? `, ${esc(state.profile.name)}` : ''; return `${g.text}${nm} ${g.emoji}`; };
+function refreshGreeting() { const el = document.querySelector('h1[data-greet]'); if (el) { const t = greetingTitle(); if (el.innerHTML !== t) el.innerHTML = t; } }
 const catById = id => state.categories.find(c => c.id === id) || { name: 'Sin categoría', emoji: '' };
 const debtRemaining = d => Math.max(0, d.total - sum(d.payments, p => p.amount));
 const goalSaved = g => sum(g.contributions, c => c.amount);
@@ -355,8 +369,8 @@ const bar = (pct, cls = '') => `<div class="bar ${cls}"><span style="width:${Mat
 const card = (title, body, extra = '') => `<section class="card">${title ? `<div class="card-head"><h2>${title}</h2>${extra}</div>` : ''}${body}</section>`;
 const emptyMsg = msg => `<p class="empty">${msg}</p>`;
 const budgetCls = pct => (pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '');
-function head(title, sub = '', right = '') {
-  return `<header class="page-head"><div><h1>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="head-right">${right}</div></header>`;
+function head(title, sub = '', right = '', h1attr = '') {
+  return `<header class="page-head"><div><h1${h1attr}>${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}</div><div class="head-right">${right}</div></header>`;
 }
 function segmented(mode) {
   return `<div class="seg" role="group" aria-label="Tipo de periodo">${[['week', 'Semana'], ['fortnight', 'Quincena'], ['month', 'Mes']]
@@ -531,8 +545,7 @@ function viewHome() {
       <div class="stat"><small>Gastos</small><b>${money(yd.exp)}</b></div>
       <div class="stat"><small>Ahorrado</small><b class="pos">${money(yd.sav)}</b></div>
     </div>` : emptyMsg('Aún no hay movimientos este año.'), '<a class="link" href="#/anual">Ver año</a>');
-  const nm = state.profile ? esc(state.profile.name) : '';
-  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + cS + cL + c3 + c4 + c6 + c2 + cY; // los resúmenes (periodo y año) van al final
+  return head(greetingTitle(), 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`, ' data-greet') + c1 + cS + cL + c3 + c4 + c6 + c2 + cY; // los resúmenes (periodo y año) van al final
 }
 
 /* ----- Gastos ----- */
@@ -1385,7 +1398,7 @@ function openProfileForm(first = false) {
       if (d.birthdate < '1900-01-01' || d.birthdate > today()) return 'Revisa la fecha de nacimiento';
       return null;
     },
-    onSubmit: d => { state.profile = { name: d.name, birthdate: d.birthdate }; if (first) { N.intro = true; saveNotices(); } save(); render(true); toast(first ? `¡Hola, ${d.name}!` : 'Perfil actualizado'); }
+    onSubmit: d => { state.profile = { name: d.name, birthdate: d.birthdate }; if (first) { N.intro = true; saveNotices(); } save(); render(true); toast(first ? `¡${greetingParts().text}, ${d.name}!` : 'Perfil actualizado'); }
   });
 }
 
@@ -1601,7 +1614,8 @@ function fitStats() {
   });
 }
 window.addEventListener('resize', fitStats);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && ui.day !== today()) { ui.day = today(); render(true); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (ui.day !== today()) { ui.day = today(); render(true); } else refreshGreeting(); } });
+setInterval(refreshGreeting, 60 * 1000); // el saludo cambia solo al pasar de hora aunque la app siga abierta
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
