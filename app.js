@@ -530,7 +530,7 @@ function viewHome() {
       <div class="stat"><small>Ahorrado</small><b class="pos">${money(yd.sav)}</b></div>
     </div>` : emptyMsg('Aún no hay movimientos este año.'), '<a class="link" href="#/anual">Ver año</a>');
   const nm = state.profile ? esc(state.profile.name) : '';
-  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + cS + cL + c2 + c3 + cY + c4 + c6;
+  return head(nm ? `Hola, ${nm} 👋` : 'Hola 👋', 'Así van tus finanzas hoy', `<span class="logo-tile only-mobile">${LOGO(32)}</span>`) + c1 + cS + cL + c3 + c4 + c6 + c2 + cY; // los resúmenes (periodo y año) van al final
 }
 
 /* ----- Gastos ----- */
