@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '11'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '12'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -253,15 +253,16 @@ function dueInfo(d) {
   return { cls: '', text: `Vence ${fmtShort(d.nextDue)}` };
 }
 function goalInfo(g) {
-  const saved = goalSaved(g), left = Math.max(0, g.target - saved), pct = g.target > 0 ? saved / g.target * 100 : 0;
+  const saved = goalSaved(g), open = !(g.target > 0), left = open ? Infinity : Math.max(0, g.target - saved), pct = open ? 0 : saved / g.target * 100;
   let plan = '';
-  if (left <= 0) plan = '¡Meta cumplida! 🎉';
+  if (open) plan = '';
+  else if (left <= 0) plan = '¡Meta cumplida! 🎉';
   else if (g.deadline) {
     const days = daysBetween(today(), g.deadline);
     if (days <= 0) plan = `Plazo vencido · faltan ${money(left)}`;
     else plan = `Para llegar a tiempo: ≈ ${money(left / (days / 30.44))} al mes (${money(left / (days / 7))} por semana)`;
   }
-  return { saved, left, pct, plan };
+  return { saved, left, pct, plan, open };
 }
 
 /* ---------- Avisos (banners) ---------- */
@@ -477,7 +478,7 @@ function viewHome() {
       ${sv.hasPlan ? `<div class="stat"><small>Plan mensual</small><b>${money(sv.plan)}</b></div>` : ''}
     </div>
     ${sv.hasPlan ? `<div style="margin-top:10px"><div class="kv"><span>Ahorro mensual</span><b>${money(sv.month)} de ${money(sv.plan)}</b></div>${bar(sv.plan ? sv.month / sv.plan * 100 : 0, sv.month >= sv.plan ? 'ok' : '')}<p class="muted small">${sv.month >= sv.plan ? '¡Plan del mes cumplido!' : `Te faltan ${money(sv.plan - sv.month)} este mes`}</p></div>` : ''}
-    ${goals.length ? `<div style="margin-top:10px">${goals.map(g => { const i = goalInfo(g); return `<div class="catrow"><div class="top"><span>${esc(g.name)}</span><b>${Math.round(i.pct)}%</b></div>${bar(i.pct, i.pct >= 100 ? 'ok' : '')}</div>`; }).join('')}</div>` : emptyMsg('Aún no tienes metas ni ahorros.')}
+    ${goals.length ? `<div style="margin-top:10px">${goals.map(g => { const i = goalInfo(g); return i.open ? `<div class="catrow"><div class="top"><span>${esc(g.name)}</span><b>${money(i.saved)}</b></div></div>` : `<div class="catrow"><div class="top"><span>${esc(g.name)}</span><b>${Math.round(i.pct)}%</b></div>${bar(i.pct, i.pct >= 100 ? 'ok' : '')}</div>`; }).join('')}</div>` : emptyMsg('Aún no tienes metas ni ahorros.')}
     <div class="btn-row"><button class="btn primary small" data-act="addSavingQuick">＋ Ahorro</button>${sv.hasPlan ? '' : '<button class="btn small" data-act="addMonthly">Crear ahorro mensual</button>'}<button class="btn small" data-act="addGoal">Nueva meta</button></div>`,
     '<a class="link" href="#/metas">Metas</a>');
 
@@ -643,9 +644,11 @@ function viewGoals() {
     const ms = goalMonthSaved(g);
     return `<section class="card">
       <div class="card-head"><h2>${esc(g.name)}</h2>${done ? '<span class="badge ok">Cumplida</span>' : dl !== null ? `<span class="badge ${dl < 0 ? 'bad' : dl <= 30 ? 'warn' : ''}">${dl < 0 ? 'Plazo vencido' : `Faltan ${plural(dl, 'día', 'días')}`}</span>` : ''}</div>
-      <div class="kv"><span>Ahorrado</span><b>${money(i.saved)} de ${money(g.target)}</b></div>
+      ${i.open
+        ? `<div class="kv"><span>Total ahorrado</span><b>${money(i.saved)}</b></div>${g.deadline ? `<p class="muted small">Fecha objetivo: ${fmtDate(g.deadline)}</p>` : ''}`
+        : `<div class="kv"><span>Ahorrado</span><b>${money(i.saved)} de ${money(g.target)}</b></div>
       ${bar(i.pct, done ? 'ok' : '')}
-      <p class="muted small">${Math.round(i.pct)}% completado${g.deadline ? ` · Fecha objetivo: ${fmtDate(g.deadline)}` : ''}</p>
+      <p class="muted small">${Math.round(i.pct)}% completado${g.deadline ? ` · Fecha objetivo: ${fmtDate(g.deadline)}` : ''}</p>`}
       ${g.reminderDay > 0 && !done ? `<p class="muted small" style="margin-top:6px">Aviso de ahorro: el día ${g.reminderDay} de cada mes.</p>` : ''}
       ${g.monthly > 0 && !done ? `<div class="kv" style="margin-top:8px"><span>Ahorro mensual</span><b>${money(ms)} de ${money(g.monthly)}</b></div>${bar(ms / g.monthly * 100, ms >= g.monthly ? 'ok' : '')}` : ''}
       ${i.plan ? `<p class="muted small" style="margin-top:6px">${esc(i.plan)}</p>` : ''}
@@ -661,7 +664,7 @@ function viewGoals() {
         <div class="btn-row"><button class="btn primary small" data-act="addSavingQuick">＋ Registrar ahorro</button><button class="btn small" data-act="addMonthly">Otro ahorro mensual</button></div>`)
     : card('Ahorro mensual', `<p class="muted">Define cuánto quieres ahorrar cada mes. Se descuenta de tu saldo y se ve en Inicio.</p><div class="btn-row"><button class="btn primary small" data-act="addMonthly">Crear ahorro mensual</button></div>`);
   return head('Metas y ahorros', 'Planifica y registra lo que vas ahorrando') +
-    (state.goals.length ? card('', `<div class="stats two"><div class="stat"><small>Total ahorrado</small><b class="pos">${money(sv.total)}</b></div><div class="stat"><small>Total de metas</small><b>${money(totalTarget)}</b></div><div class="stat"><small>Ahorrado este mes</small><b>${money(sv.month)}</b></div><div class="stat"><small>Plan mensual</small><b>${sv.hasPlan ? money(sv.plan) : '—'}</b></div></div>`) : '') +
+    (state.goals.length ? card('', `<div class="stats two"><div class="stat"><small>Total ahorrado</small><b class="pos">${money(sv.total)}</b></div><div class="stat"><small>Total de metas</small><b>${totalTarget > 0 ? money(totalTarget) : '—'}</b></div><div class="stat"><small>Ahorrado este mes</small><b>${money(sv.month)}</b></div><div class="stat"><small>Plan mensual</small><b>${sv.hasPlan ? money(sv.plan) : '—'}</b></div></div>`) : '') +
     monthly +
     (goals.length ? goals.map(goalCard).join('') : card('', emptyMsg('Crea tu primera meta: fondo de emergencia, vacaciones, un auto…'))) +
     fab('addGoal');
@@ -977,27 +980,27 @@ function openTxForm(tx, type = 'expense') {
 }
 
 function openGoalForm(g, opts = {}) {
-  const isEdit = !!g, monthlyMode = !isEdit && opts.mode === 'monthly';
+  const isEdit = !!g, monthlyMode = (!isEdit && opts.mode === 'monthly') || (isEdit && !(g.target > 0));
   const fields = monthlyMode ? [
     { name: 'name', label: 'Nombre del ahorro', required: true, placeholder: 'Ej: Ahorro mensual' },
     { name: 'monthly', label: 'Monto a ahorrar cada mes', type: 'number', required: true, min: 1 },
-    { name: 'target', label: 'Meta total (opcional · si lo dejas vacío son 12 meses)', type: 'number', min: 1 },
+    { name: 'target', label: 'Monto objetivo (opcional · déjalo vacío si solo quieres ahorrar cada mes)', type: 'number', min: 1 },
     { name: 'deadline', label: 'Fecha objetivo (opcional)', type: 'date' },
     { name: 'reminderDay', label: 'Aviso de ahorro: día del mes (opcional, 1 a 31)', type: 'number', min: 1 }
   ] : [
     { name: 'name', label: 'Nombre de la meta', required: true, placeholder: 'Ej: Fondo de emergencia' },
-    { name: 'target', label: 'Monto objetivo', type: 'number', required: true, min: 1 },
+    { name: 'target', label: isEdit ? 'Monto objetivo (opcional si tienes ahorro mensual)' : 'Monto objetivo', type: 'number', required: !isEdit, min: 1 },
     { name: 'monthly', label: 'Ahorro mensual planificado (opcional)', type: 'number', min: 0 },
     { name: 'deadline', label: 'Fecha objetivo (opcional)', type: 'date' },
     { name: 'reminderDay', label: 'Aviso de ahorro: día del mes (opcional, 1 a 31)', type: 'number', min: 1 }
   ];
   openForm({
-    title: isEdit ? 'Editar meta' : monthlyMode ? 'Nuevo ahorro mensual' : 'Nueva meta',
-    note: monthlyMode ? 'Cada ahorro que registres se descuenta de tu saldo del mes y cuenta para este plan.' : '',
-    fields, values: g || (monthlyMode ? { name: 'Ahorro mensual' } : {}), focus: isEdit ? '' : monthlyMode ? 'monthly' : 'name',
-    validate: d => (d.reminderDay !== null && (!Number.isInteger(d.reminderDay) || d.reminderDay < 1 || d.reminderDay > 31) ? 'El día del aviso debe ser un número entre 1 y 31' : null),
+    title: isEdit ? (monthlyMode ? 'Editar ahorro mensual' : 'Editar meta') : monthlyMode ? 'Nuevo ahorro mensual' : 'Nueva meta',
+    note: monthlyMode ? 'Cada ahorro que registres se descuenta de tu saldo del mes y cuenta para este plan. Solo necesitas el monto mensual.' : '',
+    fields, values: g ? { ...g, reminderDay: g.reminderDay || '', target: g.target || '', monthly: g.monthly || '' } : (monthlyMode ? { name: 'Ahorro mensual' } : {}), focus: isEdit ? '' : monthlyMode ? 'monthly' : 'name',
+    validate: d => (d.reminderDay !== null && (!Number.isInteger(d.reminderDay) || d.reminderDay < 1 || d.reminderDay > 31) ? 'El día del aviso debe ser un número entre 1 y 31' : !d.target && !(d.monthly > 0) ? 'Indica un monto objetivo o un ahorro mensual' : null),
     onSubmit: d => {
-      const target = d.target || (monthlyMode ? d.monthly * 12 : 0), monthly = d.monthly || 0, reminderDay = d.reminderDay || 0;
+      const target = d.target || 0, monthly = d.monthly || 0, reminderDay = d.reminderDay || 0;
       let goal = g;
       if (isEdit) {
         const changed = reminderDay !== (g.reminderDay || 0);
