@@ -43,6 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
+const APP_VERSION = '10'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -930,6 +931,7 @@ function viewSettings() {
         <button class="btn small" data-act="demo">Cargar datos de ejemplo</button>
         <button class="btn small danger" data-act="wipe">Borrar todos los datos</button>
       </div>`) +
+    card('Acerca de', `<div class="kv"><span>Versión de la app</span><b>${APP_VERSION}</b></div><p class="muted small">Si hiciste cambios y no los ves, revisa que aquí aparezca la versión nueva.</p>`) +
     card('Instalar como app', `<div class="install">
       <b>iPhone</b>
       <ol><li>Abre la dirección de la app en <b>Safari</b>.</li><li>Toca el botón Compartir y elige <b>Agregar a pantalla de inicio</b>.</li></ol>
@@ -1552,8 +1554,43 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').classList.contains('hidden')) tryClose(); });
 window.addEventListener('hashchange', () => { tryClose(); render(); });
 
-if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js').catch(() => { });
+/* ---------- Actualización automática ----------
+   Al abrir la app, al volver a ella y cada 30 minutos se compara la versión instalada con la publicada.
+   Si hay una nueva, se limpia la memoria guardada y se recarga sola (tus datos no se tocan). */
+const ONLINE_HTTP = /^https?:$/.test(location.protocol);
+async function latestVersion() {
+  const r = await fetch('index.html?_=' + Date.now(), { cache: 'no-store' });
+  const m = (await r.text()).match(/app\.js\?v=([\w.-]+)/);
+  return m ? m[1] : null;
+}
+async function updateNow() {
+  try { if ('caches' in window) await Promise.all((await caches.keys()).map(k => caches.delete(k))); } catch (e) { /* sigue */ }
+  try { if (navigator.serviceWorker) await Promise.all((await navigator.serviceWorker.getRegistrations()).map(r => r.unregister())); } catch (e) { /* sigue */ }
+  location.replace(location.pathname + '?r=' + Date.now() + location.hash);
+}
+function showUpdateBar() {
+  if ($('#updateBar')) return;
+  const bar = document.createElement('div'); bar.id = 'updateBar'; bar.className = 'update-bar'; bar.setAttribute('role', 'status');
+  bar.innerHTML = '<span>Hay una versión nueva de la app.</span><button type="button" class="btn small primary" data-act="updateNow">Actualizar ahora</button>';
+  document.body.appendChild(bar);
+}
+actions.updateNow = () => updateNow();
+async function checkForUpdate() {
+  if (!ONLINE_HTTP || !navigator.onLine) return;
+  try {
+    const v = await latestVersion();
+    if (!v || v === APP_VERSION) return;
+    const last = Number(sessionStorage.getItem('finanzas.updTry') || 0);
+    if (!$('#modal').classList.contains('hidden') || Date.now() - last < 60000) { showUpdateBar(); return; } // editando algo, o ya se intentó hace poco
+    sessionStorage.setItem('finanzas.updTry', String(Date.now()));
+    updateNow();
+  } catch (e) { /* sin conexión: se reintenta luego */ }
+}
+if ('serviceWorker' in navigator && ONLINE_HTTP) {
+  navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => { });
+  setTimeout(checkForUpdate, 1500);
+  setInterval(checkForUpdate, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
 }
 initSync();
 render();
