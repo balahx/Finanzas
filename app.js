@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '18'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '20'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -2230,10 +2230,11 @@ async function checkForUpdate() {
   if (!ONLINE_HTTP || !navigator.onLine) return;
   try {
     const v = await latestVersion();
-    if (!v || v === APP_VERSION) return;
-    const last = Number(sessionStorage.getItem('finanzas.updTry') || 0);
-    if (!$('#modal').classList.contains('hidden') || Date.now() - last < 60000) { showUpdateBar(); return; } // editando algo, o ya se intentó hace poco
-    sessionStorage.setItem('finanzas.updTry', String(Date.now()));
+    if (!v) return;
+    if (v === APP_VERSION) { sessionStorage.removeItem('finanzas.updN'); return; } // ya está al día
+    const last = Number(sessionStorage.getItem('finanzas.updTry') || 0), tries = Number(sessionStorage.getItem('finanzas.updN') || 0);
+    if (!$('#modal').classList.contains('hidden') || Date.now() - last < 60000 || tries >= 3) { showUpdateBar(); return; } // editando algo, o ya se intentó hace poco (máx. 3 recargas automáticas por sesión)
+    sessionStorage.setItem('finanzas.updTry', String(Date.now())); sessionStorage.setItem('finanzas.updN', String(tries + 1));
     updateNow();
   } catch (e) { /* sin conexión: se reintenta luego */ }
 }
