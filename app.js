@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '16'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '17'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -66,18 +66,19 @@ function defaults() {
   return {
     version: 1,
     profile: null,
-    settings: { currency: 'CLP', periodMode: 'week', weekStart: 1, notify: { loans: true, debts: true, savings: true, birthday: true } },
+    settings: { currency: 'CLP', periodMode: 'week', weekStart: 1, notify: { loans: true, debts: true, savings: true, birthday: true, budget: true, balance: true } },
     categories: DEFAULT_CATS.map(c => ({ ...c })),
-    transactions: [], budgets: {}, goals: [], debts: [], investments: [], loans: []
+    transactions: [], budgets: {}, goals: [], debts: [], investments: [], loans: [], notices: []
   };
 }
 function migrate(data) {
   const d = defaults();
   const s = { ...d, ...data, settings: { ...d.settings, ...(data.settings || {}), notify: { ...d.settings.notify, ...((data.settings || {}).notify || {}) } } };
-  for (const k of ['categories', 'transactions', 'goals', 'debts', 'investments', 'loans']) if (!Array.isArray(s[k])) s[k] = d[k];
+  for (const k of ['categories', 'transactions', 'goals', 'debts', 'investments', 'loans', 'notices']) if (!Array.isArray(s[k])) s[k] = d[k];
   if (!s.budgets || typeof s.budgets !== 'object' || Array.isArray(s.budgets)) s.budgets = {};
   const p = s.profile;
   if (!p || typeof p.name !== 'string' || !p.name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(p.birthdate || '')) s.profile = null;
+  s.notices = s.notices.filter(r => r && typeof r.id === 'string' && r.id);
   s.goals.forEach(g => { if (!Array.isArray(g.contributions)) g.contributions = []; });
   s.debts.forEach(x => { if (!Array.isArray(x.payments)) x.payments = []; });
   s.loans.forEach(x => { if (!Array.isArray(x.payments)) x.payments = []; x.person = String(x.person || ''); x.dueDate = x.dueDate || ''; });
@@ -112,7 +113,25 @@ function loadNotices() {
 }
 let N = loadNotices();
 const saveNotices = () => { try { localStorage.setItem(NOTICE_KEY, JSON.stringify(N)); } catch (e) { /* sin almacenamiento: solo se pierde el registro */ } };
+/* Los avisos cerrados o pospuestos viven en state.notices (se sincronizan entre dispositivos).
+   Los que antes se guardaban solo en este dispositivo se pasan una vez. */
+function noticeRec(key) { return state.notices.find(r => r.id === key); }
+function setNoticeRec(key, rec) { const i = state.notices.findIndex(r => r.id === key); const full = { id: key, ts: Date.now(), ...rec }; if (i >= 0) state.notices[i] = full; else state.notices.push(full); }
+function labelFromKey(k) { return { loan: 'Cobro de préstamo', debt: 'Vencimiento de deuda', save: 'Aviso de ahorro', bday: 'Cumpleaños', bdayup: 'Cumpleaños', bdayreg: 'Cumpleaños', budget: 'Presupuesto del mes', bal: 'Saldo bajo' }[String(k).split(':')[0]] || 'Aviso'; }
+function migrateNotices() {
+  let done = false; try { done = localStorage.getItem('finanzas.notices.migrated') === '1'; } catch (e) {}
+  let changed = false;
+  if (!done) {
+    for (const [k, at] of Object.entries(N.dismissed)) if (!noticeRec(k)) { state.notices.push({ id: k, kind: 'dismissed', at, ts: 0, label: labelFromKey(k) }); changed = true; }
+    N.dismissed = {}; saveNotices();
+    try { localStorage.setItem('finanzas.notices.migrated', '1'); } catch (e) {}
+  }
+  const lim = toISO(new Date(Date.now() - 400 * 864e5)), before = state.notices.length; // olvida avisos de hace más de ~13 meses
+  state.notices = state.notices.filter(r => !((r.at || '9999') < lim));
+  if (changed || state.notices.length !== before) persistLocal();
+}
 const ui = { refDate: today(), budgetDate: today(), year: new Date().getFullYear(), bdayClosed: false, day: today(), loanTab: 'persons', loanPerson: null };
+migrateNotices();
 const isLeap = y => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 
 function money(n) {
@@ -302,7 +321,8 @@ function goalInfo(g) {
 /* Un aviso se muestra desde su fecha y se queda hasta que lo cierras con la ✕ (cobros, vencimientos y ahorros).
    Los de cumpleaños se muestran una sola vez: el día que corresponde o, si no entraste ese día, la primera vez que entres después. */
 function noticeActive(key, persistent) {
-  if (N.dismissed[key]) return false;
+  const r = noticeRec(key);
+  if (r && (r.kind === 'dismissed' || (r.kind === 'snooze' && (r.until || '') > today()))) return false;
   if (!persistent) {
     const sh = N.shown[key], t = today();
     if (sh && sh !== t) return false;
@@ -331,6 +351,25 @@ function lastReminderDate(g, t) {
 function computeNotices() {
   const t = today(), n = state.settings.notify || {}, out = [];
   if (n.birthday !== false && state.profile) { const b = birthdayNotice(t); if (b) out.push({ type: 'birthday', ...b }); }
+  if (n.balance !== false) {
+    const p = monthOf(t), f = flows(p);
+    if (f.inc > 0) { // el saldo del mes se mide contra tus ingresos del mes
+      const ratio = f.bal / f.inc, lv = f.bal <= 0 ? 0 : ratio <= 0.10 ? 10 : ratio <= 0.25 ? 25 : null;
+      const key = `bal:${monthKey(p.start)}:${lv}`;
+      if (lv !== null && noticeActive(key, true)) out.push({ type: 'balance', key, lv, bal: f.bal, inc: f.inc, ratio });
+    }
+  }
+  if (n.budget !== false) {
+    const p = monthOf(t), mk = monthKey(p.start), total = sum(Object.values(state.budgets[mk] || {}));
+    if (total > 0) { // solo se muestra el umbral más alto alcanzado: 100, 90, 75 o 50 %
+      const sm = sums(txIn(p)), pct = sm.exp / total * 100, th = [100, 90, 75, 50].find(v => pct >= v);
+      const key = `budget:${mk}:${th}`;
+      if (th && noticeActive(key, true)) {
+        const top = Object.entries(sm.byCat).sort((a, b) => b[1] - a[1])[0];
+        out.push({ type: 'budget', key, th, pct, spent: sm.exp, total, top: top ? { name: catById(top[0]).name, amt: top[1] } : null });
+      }
+    }
+  }
   if (n.loans !== false) {
     state.loans.filter(l => loanRemaining(l) > 0 && l.dueDate && l.dueDate <= t).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).forEach(l => {
       const key = `loan:${l.id}:${l.dueDate}`; if (noticeActive(key, true)) out.push({ type: 'loan', key, l, late: daysBetween(l.dueDate, t) });
@@ -354,14 +393,36 @@ function computeNotices() {
   return out;
 }
 function noticeHTML(x) {
-  const close = `<button class="n-x" data-act="dismissNotice" data-key="${esc(x.key)}" aria-label="Cerrar aviso">✕</button>`;
-  const box = (tone, icon, title, text, actions) => `<div class="notice ${tone}" role="status"><span class="n-ic" aria-hidden="true">${icon}</span><div class="n-body"><b>${title}</b><p>${text}</p>${actions ? `<div class="n-actions">${actions}</div>` : ''}</div>${close}</div>`;
+  const keys = esc(x.keys ? x.keys.join('|') : x.key);
+  const close = `<button class="n-x" data-act="dismissNotice" data-keys="${keys}" aria-label="Cerrar aviso">✕</button>`;
+  const later = `<button class="btn small" data-act="snoozeNotice" data-keys="${keys}" title="Volver a mostrarlo más tarde">Más tarde</button>`;
+  const box = (tone, icon, title, text, actions) => `<div class="notice ${tone}" role="status"><span class="n-ic" aria-hidden="true">${icon}</span><div class="n-body"><b>${title}</b><p>${text}</p><div class="n-actions">${actions || ''}${later}</div></div>${close}</div>`;
+  const names = list => { const a = list.slice(0, 3).map(esc); return a.join(', ') + (list.length > 3 ? ` y ${list.length - 3} más` : ''); };
   if (x.type === 'birthday') {
     const nm = esc(state.profile.name);
     const [ttl, txt] = x.kind === 'today' ? [`¡Feliz cumpleaños, ${nm}!`, `Hoy cumples ${plural(x.age, 'año', 'años')}. Que tengas un día increíble 🎉`]
       : x.kind === 'belated' ? [`¡Feliz cumpleaños atrasado, ${nm}!`, `Tu cumpleaños fue el ${fmtBirthday(x.date)}${daysBetween(x.date, today()) > 0 ? ` (hace ${plural(daysBetween(x.date, today()), 'día', 'días')})` : ''} y cumpliste ${plural(x.age, 'año', 'años')}. ¡Que lo hayas pasado increíble! 🎉`]
       : [`¡Se acerca tu cumpleaños, ${nm}!`, `Será el ${fmtBirthday(x.date)}${x.days > 0 ? ` (en ${plural(x.days, 'día', 'días')})` : ''}. 🎂`];
-    return `<div class="birthday" role="status"><span class="cake" aria-hidden="true">🎂</span><div><b>${ttl}</b><p>${txt}</p></div><button class="bday-x" data-act="dismissNotice" data-key="${esc(x.key)}" aria-label="Cerrar saludo">✕</button></div>`;
+    return `<div class="birthday" role="status"><span class="cake" aria-hidden="true">🎂</span><div><b>${ttl}</b><p>${txt}</p></div><button class="bday-x" data-act="dismissNotice" data-keys="${esc(x.key)}" aria-label="Cerrar saludo">✕</button></div>`;
+  }
+  if (x.type === 'group') {
+    const it = x.items, n = it.length;
+    if (x.of === 'loan') return box(it.some(i => i.late > 0) ? 'bad' : 'warn', ICON.prestamos, `Tienes ${n} cobros pendientes`, `Por cobrar: <b>${money(sum(it, i => loanRemaining(i.l)))}</b> · ${names(it.map(i => i.l.person))}`, `<a class="btn small" href="#/prestamos">Ver préstamos</a>`);
+    if (x.of === 'debt') return box(it.some(i => i.late > 0) ? 'bad' : 'warn', ICON.deudas, `Tienes ${n} deudas por pagar`, `A pagar: <b>${money(sum(it, i => (i.d.installment ? Math.min(i.d.installment, debtRemaining(i.d)) : debtRemaining(i.d))))}</b> · ${names(it.map(i => i.d.name))}`, `<a class="btn small" href="#/deudas">Ver deudas</a>`);
+    return box('info', ICON.metas, `Tienes ${n} ahorros pendientes este mes`, names(it.map(i => i.g.name)), `<a class="btn small" href="#/metas">Ver ahorros</a>`);
+  }
+  if (x.type === 'balance') {
+    const pct = Math.round(Math.max(0, x.ratio) * 100);
+    const [tone, ttl, txt] = x.lv === 0 ? ['bad', 'Te quedaste sin saldo este mes', `Tus gastos, ahorros y préstamos ya superan tus ingresos del mes (<b>${money(x.inc)}</b>). Saldo: <b class="neg">${money(x.bal)}</b>.`]
+      : x.lv === 10 ? ['warn', 'Te queda muy poco saldo', `Solo te quedan <b>${money(x.bal)}</b>, el ${pct}% de tus ingresos del mes (${money(x.inc)}).`]
+      : ['info', 'Tu saldo del mes va bajando', `Te quedan <b>${money(x.bal)}</b>, el ${pct}% de tus ingresos del mes (${money(x.inc)}).`];
+    return box(tone, ICON.gastos, ttl, txt, `<a class="btn small" href="#/gastos">Ver gastos</a>`);
+  }
+  if (x.type === 'budget') {
+    const left = x.total - x.spent;
+    const [tone, ttl] = x.th >= 100 ? ['bad', x.pct > 100 ? 'Superaste tu presupuesto del mes' : 'Llegaste al límite de tu presupuesto'] : x.th >= 90 ? ['warn', 'Estás por agotar tu presupuesto'] : x.th >= 75 ? ['warn', 'Llevas el 75% de tu presupuesto'] : ['info', 'Llevas la mitad de tu presupuesto'];
+    const txt = `Has gastado <b>${money(x.spent)}</b> de ${money(x.total)} (${Math.round(x.pct)}%). ${left >= 0 ? `Te quedan <b>${money(left)}</b>.` : `Te pasaste por <b class="neg">${money(-left)}</b>.`}${x.top ? ` Lo que más pesa: ${esc(x.top.name)} (${money(x.top.amt)}).` : ''}`;
+    return box(tone, ICON.presupuesto, ttl, txt, `<a class="btn small" href="#/presupuesto">Ver presupuesto</a>`);
   }
   if (x.type === 'loan') {
     const l = x.l, ttl = x.late === 0 ? `Hoy vence el cobro a ${esc(l.person)}` : `Cobro vencido: ${esc(l.person)}`;
@@ -378,8 +439,29 @@ function noticeHTML(x) {
   const txt = `${x.late === 0 ? '' : `Tu aviso era el ${esc(fmtDate(x.occ))}. `}${g.monthly > 0 ? `Plan del mes: ${money(g.monthly)} · llevas ${money(saved)}.` : 'Aún no registras ahorro este mes.'}`;
   return box('info', ICON.metas, ttl, txt, `<button class="btn small" data-act="addSaving" data-id="${g.id}">Registrar ahorro</button>`);
 }
+/* Si hay 3 o más avisos del mismo tipo (cobros, deudas o ahorros), se juntan en uno solo */
+function groupNotices(list) {
+  const by = {}, out = [], seen = new Set();
+  for (const x of list) if (['loan', 'debt', 'save'].includes(x.type)) (by[x.type] = by[x.type] || []).push(x);
+  for (const x of list) {
+    const g = by[x.type];
+    if (g && g.length >= 3) { if (!seen.has(x.type)) { seen.add(x.type); out.push({ type: 'group', of: x.type, items: g, key: 'group:' + x.type, keys: g.map(i => i.key) }); } }
+    else out.push(x);
+  }
+  return out;
+}
+/* Texto corto de un aviso, para el historial */
+function noticeLabel(x) {
+  if (x.type === 'birthday') return x.kind === 'today' ? 'Feliz cumpleaños' : x.kind === 'belated' ? 'Cumpleaños atrasado' : 'Se acerca tu cumpleaños';
+  if (x.type === 'loan') return `Cobro: ${x.l.person}`;
+  if (x.type === 'debt') return `Vencimiento: ${x.d.name}`;
+  if (x.type === 'save') return `Ahorro: ${x.g.name}`;
+  if (x.type === 'budget') return `Presupuesto al ${x.th}%`;
+  if (x.type === 'balance') return x.lv === 0 ? 'Sin saldo' : 'Saldo bajo';
+  return 'Aviso';
+}
 function noticesHTML() {
-  const list = computeNotices(), MAX = 4;
+  const list = groupNotices(computeNotices()), MAX = 4;
   return list.slice(0, MAX).map(noticeHTML).join('') + (list.length > MAX ? `<p class="muted small notice-more">Tienes ${plural(list.length - MAX, 'aviso más', 'avisos más')}. Ciérralos para ver los siguientes.</p>` : '');
 }
 
@@ -954,9 +1036,11 @@ function viewSettings() {
       <div class="field"><label>Vista por defecto de gastos y resumen</label><select data-setting="periodMode">${opt([['week', 'Semanal'], ['fortnight', 'Quincenal (1–15 y 16–fin de mes)'], ['month', 'Mensual']], st.periodMode)}</select></div>
       <div class="field"><label>La semana empieza el</label><select data-setting="weekStart">${opt([[1, 'Lunes'], [0, 'Domingo']], st.weekStart)}</select></div>`) +
     card('Avisos', `
-      <p class="muted">Los avisos aparecen arriba al abrir la app. Los de cobros, vencimientos y ahorro se quedan hasta que los cierres con la ✕.</p>
-      ${[['loans', 'Cobros de préstamos'], ['debts', 'Vencimientos de deudas'], ['savings', 'Avisos de ahorro'], ['birthday', 'Cumpleaños']].map(([k, l]) => `<label class="check"><input type="checkbox" data-notify="${k}" ${(st.notify || {})[k] !== false ? 'checked' : ''}> ${l}</label>`).join('')}
-      <div class="btn-row"><button class="btn small" data-act="resetNotices">Volver a mostrar avisos cerrados</button></div>`) +
+      <p class="muted">Los avisos aparecen arriba al abrir la app. Los de cobros, vencimientos, ahorro, presupuesto y saldo se quedan hasta que los cierres con la ✕ o los pospongas con “Más tarde”. Lo que cierres vale en todos tus dispositivos.</p>
+      ${[['loans', 'Cobros de préstamos'], ['debts', 'Vencimientos de deudas'], ['savings', 'Avisos de ahorro'], ['budget', 'Presupuesto del mes (al 50%, 75%, 90% y 100%)'], ['balance', 'Saldo bajo del mes'], ['birthday', 'Cumpleaños']].map(([k, l]) => `<label class="check"><input type="checkbox" data-notify="${k}" ${(st.notify || {})[k] !== false ? 'checked' : ''}> ${l}</label>`).join('')}
+      ${(() => { const t = today(), hist = state.notices.filter(r => r.kind === 'dismissed' || (r.kind === 'snooze' && (r.until || '') > t)).sort((a, b) => (b.ts || 0) - (a.ts || 0) || String(b.at).localeCompare(String(a.at))).slice(0, 8);
+        return hist.length ? `<details open><summary>Avisos cerrados o pospuestos (${hist.length})</summary>${hist.map(r => `<div class="mini"><span>${esc(r.label || labelFromKey(r.id))} · ${r.kind === 'snooze' ? `vuelve el ${esc(fmtDate(r.until))}` : `cerrado el ${esc(fmtDate(r.at))}`}</span><button class="btn small" data-act="restoreNotice" data-key="${esc(r.id)}">Volver a mostrar</button></div>`).join('')}</details>` : ''; })()}
+      <div class="btn-row"><button class="btn small" data-act="resetNotices">Volver a mostrar todos los avisos cerrados</button></div>`) +
     card('Categorías', state.categories.map(catRow).join('') + '<div class="btn-row"><button class="btn small" data-act="addCat">＋ Nueva categoría</button></div>') +
     card('Respaldo de datos', `
       <p class="muted">Tus datos se guardan en este dispositivo. Un respaldo en archivo sirve de copia de seguridad (y para pasar datos si no usas la sincronización).</p>
@@ -1544,8 +1628,26 @@ const actions = {
   syncNow: () => { if (cloud.engine) { cloud.engine.pushNow(); toast('Sincronizando…'); } },
   syncLogout: () => { if (cloud.remote && confirm('¿Cerrar sesión? Tus datos seguirán en este dispositivo, pero dejarán de sincronizarse.\n\nSi después entras con OTRA cuenta, los datos de este dispositivo se combinarán con ella.')) cloud.remote.signOut(); },
   yearShift: d => { ui.year += Number(d.dir); render(true); },
-  dismissNotice: d => { N.dismissed[d.key] = today(); saveNotices(); render(true); },
-  resetNotices: () => { N = { dismissed: {}, shown: {}, intro: false }; saveNotices(); render(true); toast('Los avisos cerrados volverán a mostrarse si corresponden'); },
+  dismissNotice: d => {
+    const keys = String(d.keys || d.key || '').split('|').filter(Boolean), raw = computeNotices();
+    for (const k of keys) { const x = raw.find(r => r.key === k); setNoticeRec(k, { kind: 'dismissed', at: today(), label: x ? noticeLabel(x) : labelFromKey(k) }); }
+    save(); render(true);
+  },
+  snoozeNotice: d => {
+    const keys = String(d.keys || d.key || '').split('|').filter(Boolean), raw = computeNotices();
+    openForm({
+      title: 'Recordarme más tarde', note: 'El aviso se esconde y vuelve a aparecer solo ese día.',
+      fields: [{ name: 'days', label: 'Volver a mostrarlo', type: 'select', options: [{ value: '1', label: 'Mañana' }, { value: '3', label: 'En 3 días' }, { value: '7', label: 'En una semana' }] }],
+      values: { days: '1' }, submitLabel: 'Posponer',
+      onSubmit: v => {
+        const until = addDays(today(), Number(v.days) || 1);
+        for (const k of keys) { const x = raw.find(r => r.key === k); setNoticeRec(k, { kind: 'snooze', until, at: today(), label: x ? noticeLabel(x) : labelFromKey(k) }); }
+        save(); render(true); toast(`Te lo recuerdo el ${fmtDate(until)}`);
+      }
+    });
+  },
+  restoreNotice: d => { state.notices = state.notices.filter(r => r.id !== d.key); save(); render(true); toast('El aviso volverá a mostrarse si corresponde'); },
+  resetNotices: () => { N = { dismissed: {}, shown: {}, intro: false }; saveNotices(); state.notices = []; save(); render(true); toast('Los avisos cerrados volverán a mostrarse si corresponden'); },
   editProfile: () => openProfileForm(false),
   setMode: d => { state.settings.periodMode = d.mode; save(); render(true); },
   shift: d => { const mode = state.settings.periodMode; ui.refDate = shiftPeriod(mode, periodOf(mode, ui.refDate), Number(d.dir)).start; render(true); },
