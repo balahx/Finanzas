@@ -2107,13 +2107,28 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (!isLocked()) return; if (/^\d$/.test(e.key)) lockKey(e.key); else if (e.key === 'Backspace') lockKey('del'); });
 
+/* Código de recuperación: se muestra una sola vez; solo se guarda su huella. Sirve para elegir un PIN nuevo sin borrar datos. */
+const REC_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+function newRecoveryCode() { const r = crypto.getRandomValues(new Uint8Array(12)); const c = Array.from(r, v => REC_ALPHABET[v % REC_ALPHABET.length]).join(''); return `${c.slice(0, 4)}-${c.slice(4, 8)}-${c.slice(8)}`; }
+const normCode = x => String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function makeRecovery() { const code = newRecoveryCode(), salt = newSalt(); return { code, rec: { salt, hash: await hashPin(normCode(code), salt) } }; }
+function showRecoveryCode(code, onDone) {
+  openForm({
+    title: 'Tu código de recuperación',
+    note: `<p>Si algún día olvidas el PIN, este código te deja elegir uno nuevo <b>sin perder tus datos</b>. Anótalo en un lugar seguro (no en esta misma app). No se vuelve a mostrar.</p><p class="recovery-code" id="recCode">${esc(code)}</p><p><button type="button" class="btn small" id="btnCopyCode">Copiar</button></p>`,
+    fields: [], submitLabel: 'Ya lo guardé', locked: true,
+    onSubmit: () => { if (onDone) setTimeout(onDone, 0); }
+  });
+  $('#btnCopyCode').addEventListener('click', async () => { try { await navigator.clipboard.writeText(code); toast('Código copiado'); } catch (e) { toast('No se pudo copiar: anótalo a mano'); } });
+}
 function securityCard() {
   const c = lockCfg();
   if (!c) return card('Seguridad', `<p class="muted">Protege tus datos con un PIN. La app se bloquea al abrirla o al volver después de un rato${bioOK ? ', y puedes entrar con tu huella o Face ID' : ''}. Vale solo para este dispositivo.</p><div class="btn-row"><button class="btn primary small" data-act="lockSetup">Activar bloqueo con PIN</button></div>`);
   return card('Seguridad', `
     <p class="muted">Bloqueo activado en este dispositivo${c.bio ? ' · con huella / Face ID' : ''}.</p>
     <div class="field"><label>Bloquear la app</label><select data-lockwait>${[['0', 'Cada vez que salgo de la app'], ['1', 'Si vuelvo después de 1 minuto'], ['5', 'Si vuelvo después de 5 minutos'], ['15', 'Si vuelvo después de 15 minutos']].map(([v, l]) => `<option value="${v}" ${String(c.wait ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-    <div class="btn-row"><button class="btn small" data-act="lockNow">Bloquear ahora</button><button class="btn small" data-act="lockChange">Cambiar PIN</button>${bioOK ? `<button class="btn small" data-act="${c.bio ? 'lockBioOff' : 'lockBioOn'}">${c.bio ? 'Quitar huella / Face ID' : 'Usar huella / Face ID'}</button>` : ''}<button class="btn small" data-act="lockRemove">Quitar el bloqueo</button></div>`);
+    <p class="muted small">Código de recuperación: ${c.rec ? '<b>creado</b>' : '<b>sin crear</b> (recomendado)'}${cloud.user ? ' · también puedes recuperar el acceso con la contraseña de tu cuenta' : ''}.</p>
+    <div class="btn-row"><button class="btn small" data-act="lockNow">Bloquear ahora</button><button class="btn small" data-act="lockChange">Cambiar PIN</button><button class="btn small" data-act="lockNewCode">${c.rec ? 'Nuevo código de recuperación' : 'Crear código de recuperación'}</button>${bioOK ? `<button class="btn small" data-act="${c.bio ? 'lockBioOff' : 'lockBioOn'}">${c.bio ? 'Quitar huella / Face ID' : 'Usar huella / Face ID'}</button>` : ''}<button class="btn small" data-act="lockRemove">Quitar el bloqueo</button></div>`);
 }
 const pinFields = (labelNew = 'PIN nuevo') => [
   { name: 'pin', label: labelNew, type: 'password', inputmode: 'numeric', maxlength: 6, required: true, autocomplete: 'off' },
@@ -2125,12 +2140,47 @@ async function askPin(title, note, onOk) { // pide el PIN actual y ejecuta onOk 
   openForm({ title, note, fields: [{ name: 'cur', label: 'PIN actual', type: 'password', inputmode: 'numeric', maxlength: 6, required: true, autocomplete: 'off' }], focus: 'cur', submitLabel: 'Continuar',
     onSubmit: async d => { let ok = false; try { ok = (await hashPin(d.cur, c.salt)) === c.hash; } catch (e) {} if (!ok) { toast('El PIN no es correcto'); return false; } setTimeout(onOk, 0); } });
 }
+function lockNewPinForm(title) { // tras verificar por código o contraseña: elegir PIN nuevo (y un código nuevo)
+  const c = lockCfg();
+  openForm({
+    title, note: 'Elige tu PIN nuevo.', fields: pinFields(), focus: 'pin', submitLabel: 'Guardar y entrar', locked: true, validate: d => pinProblem(d, c.len || 4),
+    onSubmit: async d => {
+      const salt = newSalt(), r = await makeRecovery();
+      saveLockCfg({ ...c, salt, hash: await hashPin(d.pin, salt), fails: 0, until: 0, rec: r.rec });
+      unlock(); render(true); toast('PIN nuevo guardado'); setTimeout(() => showRecoveryCode(r.code), 0);
+    }
+  });
+}
+function lockRecoverCode() {
+  const c = lockCfg();
+  openForm({
+    title: 'Código de recuperación', note: 'Escribe el código que guardaste (formato XXXX-XXXX-XXXX).', fields: [{ name: 'code', label: 'Código', type: 'text', required: true, autocomplete: 'off' }], focus: 'code', submitLabel: 'Verificar',
+    onSubmit: async d => { let ok = false; try { ok = (await hashPin(normCode(d.code), c.rec.salt)) === c.rec.hash; } catch (e) {} if (!ok) { toast('El código no es correcto'); return false; } setTimeout(() => lockNewPinForm('PIN nuevo'), 0); }
+  });
+}
+function lockRecoverAccount() {
+  openForm({
+    title: 'Contraseña de tu cuenta', note: `Escribe la contraseña de <b>${esc(cloud.user.email)}</b> para comprobar que eres tú.`, fields: [{ name: 'password', label: 'Contraseña', type: 'password', required: true, autocomplete: 'current-password' }], focus: 'password', submitLabel: 'Verificar',
+    extra: '<p id="formError" class="form-error" role="alert"></p>',
+    onSubmit: async d => {
+      try { await cloud.remote.signIn(cloud.user.email, d.password); } catch (e) { const fe = $('#formError'); if (fe) fe.textContent = authErr(e); return false; }
+      setTimeout(() => lockNewPinForm('PIN nuevo'), 0);
+    }
+  });
+}
+async function lockWipe() {
+  const cloudOn = !!(cloud.remote && cloud.user);
+  if (!confirm(cloudOn ? 'Se cerrará la sesión y se borrarán los datos de ESTE dispositivo.\n\nTus datos siguen en la nube: vuelve a iniciar sesión con tu correo y contraseña para recuperarlos.\n\n¿Continuar?' : 'Se borrarán los datos de ESTE dispositivo.\n\nNo tienes sincronización activa, así que sin un respaldo se perderían.\n\n¿Borrarlos?')) return;
+  try { if (cloudOn) await cloud.remote.signOut(); } catch (e) { /* se borra igual */ }
+  try { Object.keys(localStorage).filter(k => k.startsWith('finanzas')).forEach(k => localStorage.removeItem(k)); } catch (e) { /* sigue */ }
+  location.reload();
+}
 Object.assign(actions, {
   lockSetup: () => openForm({
     title: 'Activar bloqueo', note: 'Elige un PIN fácil de recordar para ti. Si lo olvidas, tendrás que borrar los datos de este dispositivo (se recuperan con tu cuenta si tienes sincronización).',
     fields: [{ name: 'len', label: 'Largo del PIN', type: 'select', options: [{ value: '4', label: '4 números' }, { value: '6', label: '6 números' }] }, ...pinFields('PIN')], values: { len: '4' }, focus: 'pin', submitLabel: 'Activar',
     validate: d => pinProblem(d, Number(d.len)),
-    onSubmit: async d => { const salt = newSalt(); saveLockCfg({ salt, hash: await hashPin(d.pin, salt), len: Number(d.len), wait: 1, fails: 0, until: 0, bio: null }); render(true); toast('Bloqueo activado'); }
+    onSubmit: async d => { const salt = newSalt(), r = await makeRecovery(); saveLockCfg({ salt, hash: await hashPin(d.pin, salt), len: Number(d.len), wait: 1, fails: 0, until: 0, bio: null, rec: r.rec }); render(true); toast('Bloqueo activado'); setTimeout(() => showRecoveryCode(r.code), 0); }
   }),
   lockNow: () => showLock(),
   lockChange: () => askPin('Cambiar PIN', 'Primero escribe tu PIN actual.', () => { const c = lockCfg(); openForm({
@@ -2139,12 +2189,17 @@ Object.assign(actions, {
   lockRemove: () => askPin('Quitar el bloqueo', 'Escribe tu PIN para desactivarlo.', () => { saveLockCfg(null); render(true); toast('Bloqueo desactivado'); }),
   lockBioOn: async () => { const c = lockCfg(); if (!c) return; lockBusy = true; try { const id = await bioEnroll(); saveLockCfg({ ...c, bio: id }); render(true); toast('Listo: ahora puedes entrar con tu huella o Face ID'); } catch (e) { toast('No se pudo activar la huella / Face ID'); } lockBusy = false; },
   lockBioOff: () => { const c = lockCfg(); if (c) { saveLockCfg({ ...c, bio: null }); render(true); toast('Huella / Face ID desactivados'); } },
-  lockForgot: async () => {
-    const cloudOn = !!(cloud.remote && cloud.user);
-    if (!confirm(cloudOn ? 'Para entrar sin PIN se cerrará la sesión y se borrarán los datos de ESTE dispositivo.\n\nTus datos siguen en la nube: vuelve a iniciar sesión con tu correo y contraseña para recuperarlos.\n\n¿Continuar?' : 'Para entrar sin PIN hay que borrar los datos de ESTE dispositivo.\n\nNo tienes sincronización activa, así que sin un respaldo se perderían.\n\n¿Borrarlos?')) return;
-    try { if (cloudOn) await cloud.remote.signOut(); } catch (e) { /* se borra igual */ }
-    try { Object.keys(localStorage).filter(k => k.startsWith('finanzas')).forEach(k => localStorage.removeItem(k)); } catch (e) { /* sigue */ }
-    location.reload();
+  lockNewCode: () => askPin('Nuevo código de recuperación', 'Escribe tu PIN. El código anterior dejará de servir.', async () => { const c = lockCfg(), r = await makeRecovery(); saveLockCfg({ ...c, rec: r.rec }); render(true); showRecoveryCode(r.code); }),
+  /* ¿Olvidaste tu PIN? → código de recuperación, contraseña de la cuenta, o (último recurso) borrar los datos de este dispositivo */
+  lockForgot: () => {
+    const c = lockCfg(); if (!c) return;
+    const cloudOn = !!(cloud.remote && cloud.user && cloud.user.email);
+    const opts = [...(c.rec ? [{ value: 'code', label: 'Usar mi código de recuperación' }] : []), ...(cloudOn ? [{ value: 'account', label: 'Verificar con la contraseña de mi cuenta' }] : []), { value: 'wipe', label: 'Borrar los datos de este dispositivo' }];
+    openForm({
+      title: 'Recuperar el acceso', fields: [{ name: 'how', type: 'select', label: '¿Cómo quieres entrar?', options: opts }], values: { how: opts[0].value }, submitLabel: 'Continuar',
+      note: opts.length === 1 ? 'No tienes código de recuperación ni sincronización activa, así que la única salida es borrar los datos de este dispositivo (sin un respaldo, se pierden).' : 'Con el código o la contraseña eliges un PIN nuevo y no pierdes nada.',
+      onSubmit: d => { setTimeout(() => ({ code: lockRecoverCode, account: lockRecoverAccount, wipe: lockWipe })[d.how](), 0); }
+    });
   }
 });
 document.addEventListener('change', e => { if (e.target.matches && e.target.matches('[data-lockwait]')) { const c = lockCfg(); if (c) saveLockCfg({ ...c, wait: Number(e.target.value) }); } });
