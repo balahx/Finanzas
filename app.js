@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '15'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '16'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -214,11 +214,30 @@ function isSummerTime(d = new Date()) {
 }
 function greetingParts(d = new Date()) {
   const h = d.getHours(), eveningFrom = isSummerTime(d) ? 20 : 18;
-  if (h >= 5 && h < 12) return { text: 'Buenos Días', emoji: '☀️' };
-  if (h >= 12 && h < eveningFrom) return { text: 'Buenas Tardes', emoji: '🌤️' };
-  return { text: 'Buenas Noches', emoji: '🌙' };
+  if (h >= 5 && h < 12) return { text: 'Buenos Días', key: 'dia' };
+  if (h >= 12 && h < eveningFrom) return { text: 'Buenas Tardes', key: 'tarde' };
+  return { text: 'Buenas Noches', key: 'noche' };
 }
-const greetingTitle = (d = new Date()) => { const g = greetingParts(d), nm = state.profile && state.profile.name ? `, ${esc(state.profile.name)}` : ''; return `${g.text}${nm} ${g.emoji}`; };
+/* Emojis del saludo, al azar: de día (mañana y tarde) los que se relacionan con el dinero; de noche, los de la noche.
+   Se elige uno al abrir la app (distinto al de la vez anterior) y se mantiene mientras no cambie entre día y noche,
+   para que no parpadee cada vez que se dibuja la pantalla. Al volver a la app después de un rato se sortea otro. */
+const GREET_EMOJIS = {
+  dia: ['💲', '🤑', '💰', '💵', '💸', '💳', '🏦', '📈', '💎'],
+  noche: ['🌙', '🌛', '🌜', '🌃', '🌌', '🌠', '⭐', '🌟', '😴', '🦉', '💤', '🛌']
+};
+let greetPick = { kind: '', emoji: '' };
+function pickGreetEmoji(key) {
+  const kind = key === 'noche' ? 'noche' : 'dia', pool = GREET_EMOJIS[kind];
+  if (greetPick.kind === kind && pool.includes(greetPick.emoji)) return greetPick.emoji;
+  const lsKey = 'finanzas.greetEmoji.' + kind;
+  let last = ''; try { last = localStorage.getItem(lsKey) || ''; } catch (e) {}
+  const choices = pool.filter(e => e !== last && e !== greetPick.emoji);
+  const emoji = choices[Math.floor(Math.random() * choices.length)];
+  greetPick = { kind, emoji };
+  try { localStorage.setItem(lsKey, emoji); } catch (e) {}
+  return emoji;
+}
+const greetingTitle = (d = new Date()) => { const g = greetingParts(d), nm = state.profile && state.profile.name ? `, ${esc(state.profile.name)}` : ''; return `${g.text}${nm} ${pickGreetEmoji(g.key)}`; };
 function refreshGreeting() { const el = document.querySelector('h1[data-greet]'); if (el) { const t = greetingTitle(); if (el.innerHTML !== t) el.innerHTML = t; } }
 const catById = id => state.categories.find(c => c.id === id) || { name: 'Sin categoría', emoji: '' };
 const debtRemaining = d => Math.max(0, d.total - sum(d.payments, p => p.amount));
@@ -1614,7 +1633,12 @@ function fitStats() {
   });
 }
 window.addEventListener('resize', fitStats);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (ui.day !== today()) { ui.day = today(); render(true); } else refreshGreeting(); } });
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) greetPick = { kind: '', emoji: greetPick.emoji }; // volvió después de un rato: otro emoji
+  if (ui.day !== today()) { ui.day = today(); render(true); } else refreshGreeting();
+});
 setInterval(refreshGreeting, 60 * 1000); // el saludo cambia solo al pasar de hora aunque la app siga abierta
 
 document.addEventListener('click', e => {
