@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '10'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '11'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -554,11 +554,14 @@ function viewTx() {
   const histSums = hist.map(h => sums(txIn(h)).exp);
   const maxExp = Math.max(...histSums, 1);
 
-  const flowRow = (icon, title, sub, amt, href, pos) => `<a class="row" href="${href}"><span class="emo">${icon}</span><span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span><span class="amt ${pos ? 'pos' : ''}">${pos ? '+' : '−'}${money(amt)}</span></a>`;
+  const flowRow = (icon, title, sub, amt, t, pos) => {
+    const tag = `<span class="emo">${icon}</span><span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span><span class="amt ${pos ? 'pos' : ''}">${pos ? '+' : '−'}${money(amt)}</span>`;
+    return `<button class="row" data-act="${t.act}" data-id="${t.id}" data-cid="${t.cid || ''}">${tag}</button>`;
+  };
   const txRow = m => {
-    if (m.k === 'sav') return flowRow(ICON.metas, `Ahorro · ${m.g.name}`, m.c.note || 'Meta de ahorro', m.c.amount, '#/metas', false);
-    if (m.k === 'loan') return flowRow(ICON.prestamos, `Préstamo a ${m.l.person}`, m.l.note || 'Préstamo', m.l.amount, '#/prestamos', false);
-    if (m.k === 'lpay') return flowRow(ICON.prestamos, `Cobro de ${m.l.person}`, m.x.note || 'Cobro de préstamo', m.x.amount, '#/prestamos', true);
+    if (m.k === 'sav') return flowRow(ICON.metas, `Ahorro · ${m.g.name}`, m.c.note || 'Meta de ahorro', m.c.amount, { act: 'editSaving', id: m.g.id, cid: m.c.id }, false);
+    if (m.k === 'loan') return flowRow(ICON.prestamos, `Préstamo a ${m.l.person}`, m.l.note || 'Préstamo', m.l.amount, { act: 'editLoan', id: m.l.id }, false);
+    if (m.k === 'lpay') return flowRow(ICON.prestamos, `Cobro de ${m.l.person}`, m.x.note || 'Cobro de préstamo', m.x.amount, { act: 'editLoanPay', id: m.l.id, cid: m.x.id }, true);
     const t = m.t, c = catById(t.categoryId), inc = t.type === 'income';
     return `<button class="row" data-act="editTx" data-id="${t.id}"><span class="emo">${mono(c)}</span><span class="grow"><b>${esc(t.note || c.name)}</b><small>${esc(c.name)}</small></span><span class="amt ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${money(t.amount)}</span></button>`;
   };
@@ -647,7 +650,7 @@ function viewGoals() {
       ${g.monthly > 0 && !done ? `<div class="kv" style="margin-top:8px"><span>Ahorro mensual</span><b>${money(ms)} de ${money(g.monthly)}</b></div>${bar(ms / g.monthly * 100, ms >= g.monthly ? 'ok' : '')}` : ''}
       ${i.plan ? `<p class="muted small" style="margin-top:6px">${esc(i.plan)}</p>` : ''}
       <div class="btn-row"><button class="btn primary small" data-act="addSaving" data-id="${g.id}">＋ Registrar ahorro</button><button class="btn small" data-act="editGoal" data-id="${g.id}">Editar</button></div>
-      ${g.contributions.length ? `<details><summary>Historial de ahorros (${g.contributions.length})</summary>${g.contributions.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => `<div class="mini"><span>${fmtDate(c.date)}${c.note ? ' · ' + esc(c.note) : ''}</span><b>${money(c.amount)}</b><button class="x" data-act="delSaving" data-id="${g.id}" data-cid="${c.id}" aria-label="Eliminar ahorro">✕</button></div>`).join('')}</details>` : ''}
+      ${g.contributions.length ? `<details><summary>Historial de ahorros (${g.contributions.length})</summary>${g.contributions.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => `<div class="mini"><button class="mini-edit" data-act="editSaving" data-id="${g.id}" data-cid="${c.id}" aria-label="Editar ahorro"><span>${fmtDate(c.date)}${c.note ? ' · ' + esc(c.note) : ''}</span><b>${money(c.amount)}</b><i class="pen">✎</i></button><button class="x" data-act="delSaving" data-id="${g.id}" data-cid="${c.id}" aria-label="Eliminar ahorro">✕</button></div>`).join('')}</details>` : ''}
     </section>`;
   };
   const monthly = sv.hasPlan
@@ -686,7 +689,7 @@ function viewDebts() {
       ${bar(pct, 'ok')}
       <p class="muted small">Pagado ${money(paid)} de ${money(d.total)} (${Math.round(pct)}%)</p>
       <div class="btn-row">${rem > 0 ? `<button class="btn primary small" data-act="payDebt" data-id="${d.id}">Registrar pago</button>` : ''}<button class="btn small" data-act="editDebt" data-id="${d.id}">Editar</button></div>
-      ${d.payments.length ? `<details><summary>Pagos realizados (${d.payments.length})</summary>${d.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(p => `<div class="mini"><span>${fmtDate(p.date)}</span><b>${money(p.amount)}</b><button class="x" data-act="delPayment" data-id="${d.id}" data-pid="${p.id}" aria-label="Eliminar pago">✕</button></div>`).join('')}</details>` : ''}
+      ${d.payments.length ? `<details><summary>Pagos realizados (${d.payments.length})</summary>${d.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(p => `<div class="mini"><button class="mini-edit" data-act="editPayment" data-id="${d.id}" data-pid="${p.id}" aria-label="Editar pago"><span>${fmtDate(p.date)}</span><b>${money(p.amount)}</b><i class="pen">✎</i></button><button class="x" data-act="delPayment" data-id="${d.id}" data-pid="${p.id}" aria-label="Eliminar pago">✕</button></div>`).join('')}</details>` : ''}
     </section>`;
   };
   const borrowedOpen = sum(active.filter(d => d.kind === 'loan'), debtRemaining);
@@ -713,7 +716,7 @@ function viewLoans() {
       ${bar(pct, 'ok')}
       <p class="muted small">Cobrado ${money(paid)} de ${money(l.amount)} (${Math.round(pct)}%)${l.note ? ' · ' + esc(l.note) : ''}</p>
       <div class="btn-row">${rem > 0 ? `<button class="btn primary small" data-act="payLoan" data-id="${l.id}">Registrar cobro</button>` : ''}<button class="btn small" data-act="editLoan" data-id="${l.id}">Editar</button></div>
-      ${l.payments.length ? `<details><summary>Cobros recibidos (${l.payments.length})</summary>${l.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x => `<div class="mini"><span>${fmtDate(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span><b>${money(x.amount)}</b><button class="x" data-act="delLoanPay" data-id="${l.id}" data-pid="${x.id}" aria-label="Eliminar cobro">✕</button></div>`).join('')}</details>` : ''}
+      ${l.payments.length ? `<details><summary>Cobros recibidos (${l.payments.length})</summary>${l.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x => `<div class="mini"><button class="mini-edit" data-act="editLoanPay" data-id="${l.id}" data-cid="${x.id}" aria-label="Editar cobro"><span>${fmtDate(x.date)}${x.note ? ' · ' + esc(x.note) : ''}</span><b>${money(x.amount)}</b><i class="pen">✎</i></button><button class="x" data-act="delLoanPay" data-id="${l.id}" data-pid="${x.id}" aria-label="Eliminar cobro">✕</button></div>`).join('')}</details>` : ''}
     </section>`;
   };
   const sortLoans = arr => arr.slice().sort((a, b) => (loanRemaining(b) > 0) - (loanRemaining(a) > 0) || (a.dueDate || '9999').localeCompare(b.dueDate || '9999') || b.startDate.localeCompare(a.startDate));
@@ -1034,6 +1037,64 @@ function openSavingFormFor(fixed, pick) {
       if (!g) return;
       g.contributions.push({ id: uid(), date: d.date, amount: d.amount, note: d.note });
       save(); render(true); toast('Ahorro registrado');
+    }
+  });
+}
+
+/* Editar un ahorro ya registrado (monto, fecha, nota o a qué meta pertenece) */
+function openSavingEditForm(g, c) {
+  const fields = [];
+  if (state.goals.length > 1) fields.push({ name: 'goalId', label: 'Meta o ahorro', type: 'select', options: state.goals.map(x => ({ value: x.id, label: x.name })) });
+  fields.push({ name: 'amount', label: 'Monto ahorrado', type: 'number', required: true, min: 0.01 }, { name: 'date', label: 'Fecha', type: 'date', required: true }, { name: 'note', label: 'Nota (opcional)', type: 'text' });
+  openForm({
+    title: `Editar ahorro · ${g.name}`, note: 'Si te equivocaste, corrígelo aquí. Tu saldo y los resúmenes se actualizan solos.',
+    fields, values: { goalId: g.id, amount: c.amount, date: c.date, note: c.note || '' }, submitLabel: 'Guardar',
+    onSubmit: d => {
+      Object.assign(c, { amount: d.amount, date: d.date, note: d.note });
+      const to = d.goalId && d.goalId !== g.id ? state.goals.find(x => x.id === d.goalId) : null;
+      if (to) { g.contributions = g.contributions.filter(x => x.id !== c.id); to.contributions.push(c); }
+      save(); render(true); toast('Ahorro corregido');
+    },
+    onDelete: () => {
+      if (!confirm('¿Eliminar este ahorro? Volverá a sumarse a tu saldo del mes.')) return;
+      g.contributions = g.contributions.filter(x => x.id !== c.id); save(); closeModal(); render(true);
+    }
+  });
+}
+/* Editar un cobro de préstamo ya registrado */
+function openLoanPayEditForm(l, x) {
+  const maxAmt = loanRemaining(l) + x.amount;
+  openForm({
+    title: `Editar cobro · ${l.person}`, note: 'Corrige el monto, la fecha o la nota del cobro.',
+    fields: [
+      { name: 'amount', label: 'Monto cobrado', type: 'number', required: true, min: 0.01 },
+      { name: 'date', label: 'Fecha del cobro', type: 'date', required: true },
+      { name: 'note', label: 'Nota (opcional)', type: 'text' }
+    ],
+    values: { amount: x.amount, date: x.date, note: x.note || '' }, submitLabel: 'Guardar',
+    validate: d => (d.amount > maxAmt + 0.001 ? `No puede superar lo que falta por cobrar (${money(maxAmt)})` : d.date < l.startDate ? 'El cobro no puede ser anterior al préstamo' : null),
+    onSubmit: d => { Object.assign(x, { amount: d.amount, date: d.date, note: d.note }); save(); render(true); toast('Cobro corregido'); },
+    onDelete: () => {
+      if (!confirm('¿Eliminar este cobro? El monto volverá a figurar como pendiente.')) return;
+      l.payments = l.payments.filter(p => p.id !== x.id); save(); closeModal(); render(true);
+    }
+  });
+}
+/* Editar un pago de deuda ya registrado */
+function openPayEditForm(d, p) {
+  const maxAmt = debtRemaining(d) + p.amount;
+  openForm({
+    title: `Editar pago · ${d.name}`, note: 'Corrige el monto o la fecha. El gasto asociado y el vencimiento no se modifican (edítalos en Gastos o en la deuda si hace falta).',
+    fields: [
+      { name: 'amount', label: 'Monto pagado', type: 'number', required: true, min: 0.01 },
+      { name: 'date', label: 'Fecha de pago', type: 'date', required: true }
+    ],
+    values: { amount: p.amount, date: p.date }, submitLabel: 'Guardar',
+    validate: v => (v.amount > maxAmt + 0.001 ? `No puede superar el saldo de la deuda (${money(maxAmt)})` : null),
+    onSubmit: v => { Object.assign(p, { amount: v.amount, date: v.date }); save(); render(true); toast('Pago corregido'); },
+    onDelete: () => {
+      if (!confirm('¿Eliminar este pago? (No se modifica el vencimiento ni el gasto asociado)')) return;
+      d.payments = d.payments.filter(x => x.id !== p.id); save(); closeModal(); render(true);
     }
   });
 }
@@ -1478,6 +1539,9 @@ const actions = {
   closePerson: () => { ui.loanPerson = null; render(); },
   editGoal: d => { const g = state.goals.find(x => x.id === d.id); if (g) openGoalForm(g); },
   addSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g) openSavingForm(g); },
+  editSaving: d => { const g = state.goals.find(x => x.id === d.id), c = g && g.contributions.find(x => x.id === d.cid); if (c) openSavingEditForm(g, c); },
+  editLoanPay: d => { const l = state.loans.find(x => x.id === d.id), x = l && l.payments.find(y => y.id === (d.cid || d.pid)); if (x) openLoanPayEditForm(l, x); },
+  editPayment: d => { const x = state.debts.find(y => y.id === d.id), p = x && x.payments.find(q => q.id === d.pid); if (p) openPayEditForm(x, p); },
   delSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g && confirm('¿Eliminar este ahorro? Volverá a sumarse a tu saldo del mes.')) { g.contributions = g.contributions.filter(c => c.id !== d.cid); save(); render(true); } },
   addDebt: () => openDebtForm(null),
   editDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) (x.kind === 'loan' ? openBorrowedForm(x) : openDebtForm(x)); },
