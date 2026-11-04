@@ -298,3 +298,4 @@ body.locked{overflow:hidden}
 body.locked #modal{z-index:400}
 body.locked .toast{z-index:500}
 .recovery-code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:24px;font-weight:700;letter-spacing:.08em;text-align:center;padding:14px;margin:12px 0;border:2px dashed var(--primary);border-radius:12px;background:var(--primary-soft);user-select:all}
+.lock-bio{margin-top:10px}

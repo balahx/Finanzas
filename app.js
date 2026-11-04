@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '20'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '21'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -1968,7 +1968,7 @@ window.addEventListener('resize', fitStats);
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
-  lockOnReturn(hiddenAt);
+  const wasLocked = isLocked(); lockOnReturn(hiddenAt); if (wasLocked) lockBio(true);
   if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) greetPick = { kind: '', emoji: greetPick.emoji }; // volvió después de un rato: otro emoji
   if (ui.day !== today()) { ui.day = today(); if (!applyRecurring()) render(true); else { render(true); toast('Se registraron tus movimientos fijos'); } } else { runRecurring(); refreshGreeting(); }
 });
@@ -2067,7 +2067,8 @@ function showLock() {
   const el = document.createElement('div'); el.id = 'lock'; el.className = 'lock'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'App bloqueada');
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bio', '0', 'del'];
   el.innerHTML = `<div class="lock-in"><span class="logo-tile big">${LOGO(44)}</span><h2>Mis Finanzas</h2><p id="lockMsg" class="muted">Ingresa tu PIN</p><div class="lock-dots" id="lockDots"></div>
-    <div class="pad">${keys.map(k => k === 'bio' ? (c.bio && bioOK ? '<button type="button" class="key aux" data-lockbio aria-label="Usar huella o Face ID">🔓</button>' : '<span></span>') : k === 'del' ? '<button type="button" class="key aux" data-lockdel aria-label="Borrar">⌫</button>' : `<button type="button" class="key" data-lockkey="${k}">${k}</button>`).join('')}</div>
+    <div class="pad">${keys.map(k => k === 'bio' ? '<span></span>' : k === 'del' ? '<button type="button" class="key aux" data-lockdel aria-label="Borrar">⌫</button>' : `<button type="button" class="key" data-lockkey="${k}">${k}</button>`).join('')}</div>
+    ${c.bio && bioOK ? '<button type="button" class="btn small lock-bio" data-lockbio>🔓 Entrar con Face ID / huella</button>' : ''}
     <button type="button" class="link" data-act="lockForgot">¿Olvidaste tu PIN?</button></div>`;
   document.body.appendChild(el); lockDots();
   if (lockWaitLeft()) lockTick();
@@ -2091,10 +2092,10 @@ async function lockKey(k) {
   if (wait) lockTick(); else lockMsg(`PIN incorrecto · te quedan ${5 - (fails % 5)} intentos antes de una pausa`, true);
 }
 async function lockBio(auto) {
-  const c = lockCfg(); if (!c || !c.bio || !bioOK || lockBusy || lockWaitLeft()) return;
+  const c = lockCfg(); if (!c || !c.bio || !bioOK || lockBusy || lockWaitLeft() || !isLocked() || document.visibilityState !== 'visible') return;
   lockBusy = true;
   try { await bioCheck(c.bio); lockBusy = false; saveLockCfg({ ...c, fails: 0, until: 0 }); unlock(); }
-  catch (e) { lockBusy = false; if (!auto) lockMsg('No se pudo verificar. Usa tu PIN.', true); }
+  catch (e) { lockBusy = false; lockMsg(auto ? 'Ingresa tu PIN o toca «Entrar con Face ID / huella»' : 'No se pudo verificar. Usa tu PIN.', !auto); } // iPhone a veces exige un toque: el botón lo resuelve
 }
 function lockOnReturn(at) {
   const c = lockCfg(); if (!c || isLocked() || lockBusy || !at) return;
@@ -2125,7 +2126,7 @@ function securityCard() {
   const c = lockCfg();
   if (!c) return card('Seguridad', `<p class="muted">Protege tus datos con un PIN. La app se bloquea al abrirla o al volver después de un rato${bioOK ? ', y puedes entrar con tu huella o Face ID' : ''}. Vale solo para este dispositivo.</p><div class="btn-row"><button class="btn primary small" data-act="lockSetup">Activar bloqueo con PIN</button></div>`);
   return card('Seguridad', `
-    <p class="muted">Bloqueo activado en este dispositivo${c.bio ? ' · con huella / Face ID' : ''}.</p>
+    <p class="muted">Bloqueo activado en este dispositivo${c.bio ? ' · Face ID / huella se pide sola al abrir la app (si falla, usas el PIN)' : bioOK ? ' · puedes sumar Face ID / huella; el PIN siempre queda de respaldo' : ''}.</p>
     <div class="field"><label>Bloquear la app</label><select data-lockwait>${[['0', 'Cada vez que salgo de la app'], ['1', 'Si vuelvo después de 1 minuto'], ['5', 'Si vuelvo después de 5 minutos'], ['15', 'Si vuelvo después de 15 minutos']].map(([v, l]) => `<option value="${v}" ${String(c.wait ?? 1) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     <p class="muted small">Código de recuperación: ${c.rec ? '<b>creado</b>' : '<b>sin crear</b> (recomendado)'}${cloud.user ? ' · también puedes recuperar el acceso con la contraseña de tu cuenta' : ''}.</p>
     <div class="btn-row"><button class="btn small" data-act="lockNow">Bloquear ahora</button><button class="btn small" data-act="lockChange">Cambiar PIN</button><button class="btn small" data-act="lockNewCode">${c.rec ? 'Nuevo código de recuperación' : 'Crear código de recuperación'}</button>${bioOK ? `<button class="btn small" data-act="${c.bio ? 'lockBioOff' : 'lockBioOn'}">${c.bio ? 'Quitar huella / Face ID' : 'Usar huella / Face ID'}</button>` : ''}<button class="btn small" data-act="lockRemove">Quitar el bloqueo</button></div>`);
@@ -2178,9 +2179,14 @@ async function lockWipe() {
 Object.assign(actions, {
   lockSetup: () => openForm({
     title: 'Activar bloqueo', note: 'Elige un PIN fácil de recordar para ti. Si lo olvidas, tendrás que borrar los datos de este dispositivo (se recuperan con tu cuenta si tienes sincronización).',
-    fields: [{ name: 'len', label: 'Largo del PIN', type: 'select', options: [{ value: '4', label: '4 números' }, { value: '6', label: '6 números' }] }, ...pinFields('PIN')], values: { len: '4' }, focus: 'pin', submitLabel: 'Activar',
+    fields: [{ name: 'len', label: 'Largo del PIN', type: 'select', options: [{ value: '4', label: '4 números' }, { value: '6', label: '6 números' }] }, ...pinFields('PIN'), ...(bioOK ? [{ name: 'bio', label: 'Huella / Face ID', type: 'select', options: [{ value: '1', label: 'Sí: se pide sola al abrir la app (el PIN queda de respaldo)' }, { value: '0', label: 'No, solo PIN' }] }] : [])], values: { len: '4', bio: '1' }, focus: 'pin', submitLabel: 'Activar',
     validate: d => pinProblem(d, Number(d.len)),
-    onSubmit: async d => { const salt = newSalt(), r = await makeRecovery(); saveLockCfg({ salt, hash: await hashPin(d.pin, salt), len: Number(d.len), wait: 1, fails: 0, until: 0, bio: null, rec: r.rec }); render(true); toast('Bloqueo activado'); setTimeout(() => showRecoveryCode(r.code), 0); }
+    onSubmit: async d => {
+      let bio = null, bioFail = false;
+      if (bioOK && d.bio === '1') { lockBusy = true; try { bio = await bioEnroll(); } catch (e) { bioFail = true; } lockBusy = false; } // primero, mientras el toque sigue vigente
+      const salt = newSalt(), r = await makeRecovery(); saveLockCfg({ salt, hash: await hashPin(d.pin, salt), len: Number(d.len), wait: 1, fails: 0, until: 0, bio, rec: r.rec });
+      render(true); toast(bio ? 'Bloqueo activado con Face ID / huella' : bioFail ? 'Bloqueo activado. No se pudo activar Face ID / huella: pruébalo en Seguridad' : 'Bloqueo activado'); setTimeout(() => showRecoveryCode(r.code), 0);
+    }
   }),
   lockNow: () => showLock(),
   lockChange: () => askPin('Cambiar PIN', 'Primero escribe tu PIN actual.', () => { const c = lockCfg(); openForm({
