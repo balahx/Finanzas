@@ -56,7 +56,8 @@ const DEFAULT_CATS = [
   { id: 'deudas', name: 'Deudas', emoji: '💳', type: 'expense' },
   { id: 'otros', name: 'Otros gastos', emoji: '📦', type: 'expense' },
   { id: 'sueldo', name: 'Sueldo', emoji: '💼', type: 'income' },
-  { id: 'extra', name: 'Otros ingresos', emoji: '💰', type: 'income' }
+  { id: 'extra', name: 'Otros ingresos', emoji: '💰', type: 'income' },
+  { id: 'prestamo', name: 'Préstamos recibidos', emoji: '', type: 'income' }
 ];
 const INV_KINDS = ['Acciones', 'Fondos mutuos', 'ETF', 'Criptomonedas', 'Depósito a plazo', 'APV / AFP', 'Inmuebles', 'Otro'];
 
@@ -168,6 +169,7 @@ function sums(list) {
 /* Flujos de un periodo: ingresos − gastos − ahorros − préstamos entregados + cobros de préstamos */
 function flows(p) {
   const s = sums(txIn(p));
+  const borrowed = sum(txIn(p).filter(t => t.type === 'income' && t.debtId), t => t.amount); // préstamos solicitados (ya incluidos en ingresos)
   let sav = 0, lent = 0, back = 0;
   for (const g of state.goals) for (const c of g.contributions) if (inRange(c.date, p)) sav += c.amount;
   for (const l of state.loans) {
@@ -175,7 +177,7 @@ function flows(p) {
     for (const x of l.payments) if (inRange(x.date, p)) back += x.amount;
   }
   const loanNet = lent - back;
-  return { ...s, sav, lent, back, loanNet, bal: s.inc - s.exp - sav - loanNet };
+  return { ...s, borrowed, sav, lent, back, loanNet, bal: s.inc - s.exp - sav - loanNet };
 }
 function movesIn(p) {
   const out = txIn(p).map(t => ({ k: 'tx', t, date: t.date, ts: t.createdAt || 0 }));
@@ -464,7 +466,7 @@ function viewHome() {
       ${sm.loanNet ? `<div class="stat"><small>Préstamos (neto)</small><b>${money(sm.loanNet)}</b></div>` : ''}
       <div class="stat ${sm.loanNet ? 'span2' : ''}"><small>Saldo del mes</small><b class="${sm.bal < 0 ? 'neg' : 'pos'}">${money(sm.bal)}</b></div>
     </div>
-    <p class="muted small" style="margin-top:8px">Saldo = ingresos − gastos − ahorros${sm.loanNet ? ' − préstamos' : ''}.</p>
+    <p class="muted small" style="margin-top:8px">Saldo = ingresos − gastos − ahorros${sm.loanNet ? ' − préstamos' : ''}.${sm.borrowed ? ` Los ingresos incluyen ${money(sm.borrowed)} de préstamos solicitados (los ves en Deudas).` : ''}</p>
     <div class="btn-row"><button class="btn primary small" data-act="addTx" data-type="expense">＋ Gasto</button><button class="btn small" data-act="addTx" data-type="income">＋ Ingreso</button><button class="btn small" data-act="addSavingQuick">＋ Ahorro</button><button class="btn small" data-act="addLoan">＋ Préstamo</button></div>`);
 
   const cS = card('Ahorro', `
@@ -498,6 +500,7 @@ function viewHome() {
       <div class="stat"><small>Balance</small><b class="${sp.bal < 0 ? 'neg' : 'pos'}">${money(sp.bal)}</b></div>
     </div>
     ${sp.loanNet ? `<p class="muted small" style="margin-top:6px">Incluye préstamos netos: ${money(sp.loanNet)} (entregado ${money(sp.lent)}, cobrado ${money(sp.back)}).</p>` : ''}
+    ${sp.borrowed ? `<p class="muted small" style="margin-top:6px">Los ingresos incluyen ${money(sp.borrowed)} de préstamos solicitados.</p>` : ''}
     ${topCats.length ? `<div style="margin-top:10px">${topCats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><b>${money(v)}</b></div>${bar(sp.exp ? v / sp.exp * 100 : 0)}</div>`).join('')}</div>` : emptyMsg('Sin gastos en este periodo.')}`,
     '<a class="link" href="#/gastos">Ver detalle</a>');
 
@@ -510,7 +513,7 @@ function viewHome() {
   const c4 = card('Próximos vencimientos', dues.length ? dues.map(({ d, n }) => {
     const info = dueInfo(d);
     return `<div class="row" style="cursor:default"><span class="emo">${ICON.deudas}</span><span class="grow"><b>${esc(d.name)}</b><small>${n < 0 ? 'Venció' : 'Vence'} ${fmtDate(d.nextDue)}</small></span><span style="text-align:right"><b>${money(d.installment || debtRemaining(d))}</b><br><span class="badge ${info.cls}">${esc(info.text)}</span></span></div>`;
-  }).join('') : emptyMsg('No hay vencimientos en los próximos 30 días.'), '<a class="link" href="#/deudas">Deudas</a>');
+  }).join('') + `<div class="btn-row"><button class="btn small" data-act="addBorrowed">＋ Préstamo solicitado</button></div>` : emptyMsg('No hay vencimientos en los próximos 30 días.') + `<div class="btn-row"><button class="btn small" data-act="addBorrowed">＋ Préstamo solicitado</button></div>`, '<a class="link" href="#/deudas">Deudas</a>');
 
   const c6 = card('Inversiones', state.investments.length ? `
     <div class="stats">
@@ -575,6 +578,7 @@ function viewTx() {
         <div class="stat"><small>Balance</small><b class="${s.bal < 0 ? 'neg' : 'pos'}">${money(s.bal)}</b></div>
       </div>
       ${s.loanNet ? `<p class="muted small" style="margin-top:6px">Incluye préstamos netos: ${money(s.loanNet)} (entregado ${money(s.lent)}, cobrado ${money(s.back)}).</p>` : ''}
+      ${s.borrowed ? `<p class="muted small" style="margin-top:6px">Los ingresos incluyen ${money(s.borrowed)} de préstamos solicitados.</p>` : ''}
       <p class="muted small" style="margin-top:8px">Promedio diario de gasto: <b>${money(s.exp / elapsed)}</b></p>
       ${cats.length ? `<div style="margin-top:8px">${cats.map(([id, v]) => `<div class="catrow"><div class="top"><span class="catname">${mono(catById(id), true)}${esc(catById(id).name)}</span><span><b>${money(v)}</b> · ${Math.round(s.exp ? v / s.exp * 100 : 0)}%</span></div>${bar(s.exp ? v / s.exp * 100 : 0)}</div>`).join('')}</div>` : ''}`) +
     card(`Movimientos (${list.length})`, groups.length
@@ -673,7 +677,8 @@ function viewDebts() {
     const pct = d.total > 0 ? Math.min(100, paid / d.total * 100) : 0;
     return `<section class="card">
       <div class="card-head"><h2>${esc(d.name)}</h2><span class="badge ${info.cls}">${esc(info.text)}</span></div>
-      ${d.creditor ? `<p class="muted" style="margin-top:-6px;margin-bottom:6px">${esc(d.creditor)}</p>` : ''}
+      ${d.kind === 'loan' ? `<p class="muted" style="margin-top:-6px;margin-bottom:6px"><span class="badge">Préstamo solicitado</span> ${esc(d.creditor || '')}</p>` : d.creditor ? `<p class="muted" style="margin-top:-6px;margin-bottom:6px">${esc(d.creditor)}</p>` : ''}
+      ${d.kind === 'loan' && d.receivedDate ? `<div class="kv"><span>Recibido el ${esc(fmtDate(d.receivedDate))}</span><b>${money(d.receivedAmount || d.total)}</b></div>` : ''}
       <div class="kv"><span>Saldo pendiente</span><b>${money(rem)}</b></div>
       ${d.installment ? `<div class="kv"><span>Cuota</span><b>${money(d.installment)}${d.recurring ? ' / mes' : ''}</b></div>` : ''}
       ${d.nextDue && rem > 0 ? `<div class="kv"><span>Próximo vencimiento</span><b>${fmtDate(d.nextDue)}</b></div>` : ''}
@@ -683,9 +688,11 @@ function viewDebts() {
       ${d.payments.length ? `<details><summary>Pagos realizados (${d.payments.length})</summary>${d.payments.slice().sort((a, b) => b.date.localeCompare(a.date)).map(p => `<div class="mini"><span>${fmtDate(p.date)}</span><b>${money(p.amount)}</b><button class="x" data-act="delPayment" data-id="${d.id}" data-pid="${p.id}" aria-label="Eliminar pago">✕</button></div>`).join('')}</details>` : ''}
     </section>`;
   };
-  return head('Deudas', 'Saldos, cuotas y vencimientos') +
-    (state.debts.length ? card('', `<div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><small>Total que debes</small><b class="${owed ? 'neg' : 'pos'}">${money(owed)}</b></div><div class="stat"><small>Cuotas mensuales</small><b>${money(monthly)}</b></div></div>`) : '') +
-    (list.length ? list.map(debtCard).join('') : card('', emptyMsg('No tienes deudas registradas. 🎉<br>Si tienes alguna, toca ＋ para agregarla.'))) +
+  const borrowedOpen = sum(active.filter(d => d.kind === 'loan'), debtRemaining);
+  return head('Deudas', 'Saldos, cuotas, vencimientos y préstamos solicitados') +
+    card('', `<div class="btn-row" style="margin-top:0"><button class="btn primary small" data-act="addDebt">＋ Deuda</button><button class="btn small" data-act="addBorrowed">＋ Préstamo solicitado</button></div>`) +
+    (state.debts.length ? card('', `<div class="stats"><div class="stat"><small>Total que debes</small><b class="${owed ? 'neg' : 'pos'}">${money(owed)}</b></div><div class="stat"><small>Cuotas mensuales</small><b>${money(monthly)}</b></div><div class="stat"><small>Préstamos solicitados</small><b>${money(borrowedOpen)}</b></div></div>`) : '') +
+    (list.length ? list.map(debtCard).join('') : card('', emptyMsg('No tienes deudas registradas. 🎉<br>Si tienes alguna o pediste un préstamo, agrégalo arriba.'))) +
     fab('addDebt');
 }
 
@@ -778,10 +785,11 @@ function sumTx(startISO, endISO) {
 function yearData(y) {
   const months = Array.from({ length: 12 }, () => ({ inc: 0, exp: 0, sav: 0, lent: 0, back: 0 }));
   const byCat = {}, Y = String(y), mi = iso => Number(iso.slice(5, 7)) - 1;
+  let borrowed = 0;
   for (const t of state.transactions) {
     if (t.date.slice(0, 4) !== Y) continue;
     const m = mi(t.date);
-    if (t.type === 'income') months[m].inc += t.amount;
+    if (t.type === 'income') { months[m].inc += t.amount; if (t.debtId) borrowed += t.amount; }
     else { months[m].exp += t.amount; byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount; }
   }
   for (const g of state.goals) for (const c of g.contributions) if (c.date.slice(0, 4) === Y) months[mi(c.date)].sav += c.amount;
@@ -793,8 +801,8 @@ function yearData(y) {
   const daysInYear = isLeap(y) ? 366 : 365;
   const elapsedDays = y < cy ? daysInYear : y === cy ? daysBetween(`${y}-01-01`, today()) + 1 : 0;
   const inc = sum(months, m => m.inc), exp = sum(months, m => m.exp), sav = sum(months, m => m.sav), lent = sum(months, m => m.lent), back = sum(months, m => m.back);
-  return { y, months, byCat, inc, exp, sav, lent, back, loanNet: lent - back, net: inc - exp, bal: inc - exp - sav - lent + back,
-    rate: inc > 0 ? sav / inc : null, elapsedDays, daysInYear, hasData: inc > 0 || exp > 0 || sav > 0 || lent > 0 || back > 0 };
+  return { y, months, byCat, inc, exp, sav, lent, back, borrowed, loanNet: lent - back, net: inc - exp, bal: inc - exp - sav - lent + back,
+    rate: inc - borrowed > 0 ? sav / (inc - borrowed) : null, elapsedDays, daysInYear, hasData: inc > 0 || exp > 0 || sav > 0 || lent > 0 || back > 0 };
 }
 const pctChange = (now, before) => (before ? (now - before) / before * 100 : null);
 
@@ -856,7 +864,7 @@ function viewYear() {
         <div class="stat"><small>Préstamos (neto)</small><b>${money(d.loanNet)}</b></div>
         <div class="stat"><small>Balance del año</small><b class="${d.bal < 0 ? 'neg' : 'pos'}">${money(d.bal)}</b></div>
       </div>
-      <p class="muted small" style="margin-top:8px">Balance = ingresos − gastos − ahorros − préstamos netos. Tasa de ahorro = ahorrado ÷ ingresos.</p>` : ''}`) +
+      <p class="muted small" style="margin-top:8px">Balance = ingresos − gastos − ahorros − préstamos netos. Tasa de ahorro = ahorrado ÷ ingresos${d.borrowed ? ' (sin contar los préstamos solicitados)' : ''}.${d.borrowed ? ` Los ingresos incluyen ${money(d.borrowed)} de préstamos solicitados.` : ''}</p>` : ''}`) +
     (!d.hasData ? card('', emptyMsg(`No hay movimientos registrados en ${y}.`)) : `
     ${card('Gastos e ingresos por mes', chart + table)}
     ${card('Indicadores', `
@@ -873,6 +881,7 @@ function viewYear() {
     ${card(`Ahorro y deudas en ${y}`, `
       <div class="kv"><span>Ahorrado en metas</span><b class="pos">${money(saved)}</b></div>
       <div class="kv"><span>Pagos de deudas</span><b>${money(debtPaid)}</b></div>
+      ${d.borrowed ? `<div class="kv"><span>Préstamos solicitados recibidos</span><b>${money(d.borrowed)}</b></div>` : ''}
       ${d.lent || d.back ? `<div class="kv"><span>Préstamos entregados</span><b>${money(d.lent)}</b></div><div class="kv"><span>Cobros recibidos</span><b class="pos">${money(d.back)}</b></div>` : ''}`)}`) +
     (cur ? card('Situación actual', `
       <div class="kv"><span>Ahorrado en metas</span><b>${money(goalsTotal)}</b></div>
@@ -1121,6 +1130,55 @@ function openPayForm(d) {
   });
 }
 
+/* ----- Préstamos solicitados (dinero que te prestaron: queda como deuda y suma a tus ingresos) ----- */
+function ensureLoanCat() {
+  if (!state.categories.some(c => c.id === 'prestamo')) state.categories.push({ id: 'prestamo', name: 'Préstamos recibidos', emoji: '', type: 'income' });
+  return 'prestamo';
+}
+function syncBorrowedIncome(debt, on) {
+  const tx = state.transactions.find(t => t.id === debt.incomeTxId);
+  if (!on) { if (tx) state.transactions = state.transactions.filter(t => t !== tx); debt.incomeTxId = ''; return; }
+  const rec = { type: 'income', amount: debt.receivedAmount, categoryId: ensureLoanCat(), date: debt.receivedDate, note: debt.name, debtId: debt.id };
+  if (tx) Object.assign(tx, rec);
+  else { const nt = { id: uid(), createdAt: Date.now(), ...rec }; state.transactions.push(nt); debt.incomeTxId = nt.id; }
+}
+function openBorrowedForm(d) {
+  const isEdit = !!d, hasTx = isEdit && state.transactions.some(t => t.id === d.incomeTxId), paid = isEdit ? sum(d.payments, p => p.amount) : 0;
+  openForm({
+    title: isEdit ? 'Editar préstamo solicitado' : 'Nuevo préstamo solicitado',
+    note: isEdit ? `Pagado hasta ahora: ${money(paid)}.` : 'Se guarda como deuda (con su cuota y vencimiento). Si lo dejas marcado, el dinero recibido suma a tus ingresos en la fecha en que lo recibiste.',
+    fields: [
+      { name: 'creditor', label: 'Quién te prestó', required: true, placeholder: 'Ej: Carlos o Banco', datalist: [...new Set(state.debts.map(x => x.creditor).filter(Boolean))] },
+      { name: 'received', label: 'Monto recibido', type: 'number', required: true, min: 1 },
+      { name: 'total', label: 'Total a devolver (opcional · por defecto el monto recibido)', type: 'number', min: 0 },
+      { name: 'receivedDate', label: 'Fecha en que lo recibiste', type: 'date', required: true },
+      { name: 'installment', label: 'Cuota (opcional)', type: 'number', min: 0 },
+      { name: 'nextDue', label: 'Fecha de pago / próximo vencimiento (opcional)', type: 'date' },
+      { name: 'recurring', label: 'La cuota se repite cada mes', type: 'checkbox' },
+      { name: 'addIncome', label: 'Sumar el monto recibido a mis ingresos', type: 'checkbox', default: isEdit ? hasTx : true }
+    ],
+    values: isEdit ? { ...d, received: d.receivedAmount || d.total, addIncome: hasTx } : { receivedDate: today() }, focus: isEdit ? '' : 'creditor', submitLabel: isEdit ? 'Guardar' : 'Registrar',
+    validate: v => {
+      const total = v.total || v.received;
+      if (total < v.received) return 'El total a devolver no puede ser menor al monto recibido';
+      if (isEdit && total < paid) return `El total no puede ser menor a lo ya pagado (${money(paid)})`;
+      if (v.nextDue && v.nextDue < v.receivedDate) return 'El vencimiento no puede ser anterior a la fecha en que lo recibiste';
+      return null;
+    },
+    onSubmit: v => {
+      const rec = { kind: 'loan', name: `Préstamo de ${v.creditor}`, creditor: v.creditor, total: v.total || v.received, receivedAmount: v.received, receivedDate: v.receivedDate, installment: v.installment || 0, nextDue: v.nextDue, recurring: v.recurring };
+      let debt = d;
+      if (isEdit) Object.assign(d, rec); else { debt = { id: uid(), payments: [], incomeTxId: '', ...rec }; state.debts.push(debt); }
+      syncBorrowedIncome(debt, v.addIncome);
+      save(); render(true); toast(isEdit ? 'Préstamo guardado' : v.addIncome ? 'Préstamo registrado: suma a tus ingresos' : 'Préstamo registrado');
+    },
+    onDelete: isEdit ? () => {
+      if (!confirm(`¿Eliminar el préstamo de ${d.creditor}?${hasTx ? ' También se eliminará el ingreso asociado (el dinero recibido).' : ''} Esto cambia tu saldo y tus resúmenes.`)) return;
+      state.transactions = state.transactions.filter(t => t.id !== d.incomeTxId); state.debts = state.debts.filter(x => x.id !== d.id); save(); closeModal(); render(true);
+    } : null
+  });
+}
+
 function openInvForm(i) {
   const isEdit = !!i;
   openForm({
@@ -1227,6 +1285,9 @@ function demoData() {
   s.loans.push(
     { id: uid(), createdAt: Date.now(), person: 'Pedro', amount: 150000, startDate: addDays(t, -20), dueDate: addDays(t, 10), note: 'Para el arriendo', payments: [{ id: uid(), date: addDays(t, -5), amount: 50000, note: '' }] },
     { id: uid(), createdAt: Date.now(), person: 'Ana', amount: 40000, startDate: addDays(t, -45), dueDate: addDays(t, -5), note: '', payments: [] });
+  const bid = uid(), btx = uid();
+  s.debts.push({ id: bid, kind: 'loan', name: 'Préstamo de Carlos', creditor: 'Carlos', total: 200000, receivedAmount: 200000, receivedDate: addDays(t, -3), installment: 50000, nextDue: addDays(t, 25), recurring: true, payments: [], incomeTxId: btx });
+  s.transactions.push({ id: btx, createdAt: Date.now(), type: 'income', amount: 200000, categoryId: 'prestamo', date: addDays(t, -3), note: 'Préstamo de Carlos', debtId: bid });
   s.investments.push(
     { id: uid(), name: 'Fondo mutuo balanceado', kind: 'Fondos mutuos', invested: 500000, current: 534000, date: addDays(t, -200), note: '', history: [] },
     { id: uid(), name: 'Acciones', kind: 'Acciones', invested: 300000, current: 289500, date: addDays(t, -120), note: '', history: [] },
@@ -1417,7 +1478,8 @@ const actions = {
   addSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g) openSavingForm(g); },
   delSaving: d => { const g = state.goals.find(x => x.id === d.id); if (g && confirm('¿Eliminar este ahorro? Volverá a sumarse a tu saldo del mes.')) { g.contributions = g.contributions.filter(c => c.id !== d.cid); save(); render(true); } },
   addDebt: () => openDebtForm(null),
-  editDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) openDebtForm(x); },
+  editDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) (x.kind === 'loan' ? openBorrowedForm(x) : openDebtForm(x)); },
+  addBorrowed: () => openBorrowedForm(null),
   payDebt: d => { const x = state.debts.find(y => y.id === d.id); if (x) openPayForm(x); },
   delPayment: d => { const x = state.debts.find(y => y.id === d.id); if (x && confirm('¿Eliminar este pago? (No se modifica el vencimiento ni el gasto asociado)')) { x.payments = x.payments.filter(p => p.id !== d.pid); save(); render(true); } },
   addInv: () => openInvForm(null),
