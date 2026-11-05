@@ -43,7 +43,7 @@ const fmtPct = p => `${p >= 0 ? '+' : ''}${p.toLocaleString('es-CL', { minimumFr
 
 /* ---------- Estado y almacenamiento ---------- */
 const KEY = 'finanzas.v1';
-const APP_VERSION = '21'; // súbela junto con sw.js e index.html en cada actualización
+const APP_VERSION = '22'; // súbela junto con sw.js e index.html en cada actualización
 const CURRENCIES = ['CLP', 'USD', 'EUR', 'ARS', 'PEN', 'COP', 'MXN', 'BRL', 'UYU'];
 const DEFAULT_CATS = [
   { id: 'alimentacion', name: 'Alimentación', emoji: '🛒', type: 'expense' },
@@ -1759,7 +1759,7 @@ function syncCardInner() {
   if (!cloud.user) return intro + '<div class="btn-row"><button class="btn primary small" data-act="syncLogin">Iniciar sesión</button><button class="btn small" data-act="syncSignup">Crear cuenta</button><button class="btn small" data-act="syncReset">Olvidé mi contraseña</button></div>';
   const bad = cloud.status.state === 'error';
   return `<div class="kv"><span>Cuenta</span><b>${esc(cloud.user.email || '')}</b></div><div class="kv"><span>Registros en la nube</span><b>${cloud.engine ? cloud.engine.stats().known : 0}</b></div><div class="kv"><span>Pendientes por subir</span><b>${cloud.engine ? cloud.engine.stats().pending : 0}</b></div><div class="kv"><span>Estado</span><b><span class="badge ${bad ? 'warn' : cloud.status.state === 'ok' ? 'ok' : ''}">${esc(syncStatusText())}</span></b></div>` +
-    '<div class="btn-row"><button class="btn small" data-act="syncNow">Sincronizar ahora</button><button class="btn small" data-act="syncLogout">Cerrar sesión</button></div>';
+    '<div class="btn-row"><button class="btn small" data-act="syncNow">Sincronizar ahora</button><button class="btn small" data-act="syncChangePass">Cambiar contraseña</button><button class="btn small" data-act="syncLogout">Cerrar sesión</button></div>';
 }
 function updateSyncCard() {
   const el = $('#syncBody'); if (el) el.innerHTML = syncCardInner();
@@ -1781,24 +1781,27 @@ function waitingForCloud() {
   return false;
 }
 
-function openAuthForm(mode) {
+function openAuthForm(mode, presetEmail) {
   const email = { name: 'email', label: 'Correo electrónico', type: 'email', required: true, autocomplete: 'username', placeholder: 'tu@correo.com' };
   const pass = (label, auto) => ({ name: 'password', label, type: 'password', required: true, autocomplete: auto });
   const cfg = {
     login: { title: 'Iniciar sesión', submit: 'Entrar', fields: [email, pass('Contraseña', 'current-password')], note: 'Entra con la misma cuenta en todos tus dispositivos.' },
     signup: { title: 'Crear cuenta', submit: 'Crear cuenta', fields: [email, pass('Contraseña (mínimo 6 caracteres)', 'new-password'), { ...pass('Repite la contraseña', 'new-password'), name: 'password2' }], note: 'Crea la cuenta una sola vez y luego usa “Iniciar sesión” en los demás dispositivos.' },
-    reset: { title: 'Restablecer contraseña', submit: 'Enviar correo', fields: [email], note: 'Te enviaremos un correo con un enlace para elegir una contraseña nueva.' }
+    reset: { title: 'Recuperar contraseña', submit: 'Enviar correo', fields: [email], note: 'Escribe el correo de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva. Llega desde una dirección «noreply» de Firebase: si no lo ves, revisa el spam.' }
   }[mode];
   openForm({
-    title: cfg.title, note: cfg.note, fields: cfg.fields, submitLabel: cfg.submit, focus: 'email',
-    extra: '<p id="formError" class="form-error" role="alert"></p>' + (mode === 'reset' ? '' : '<p style="margin:0 0 10px"><button type="button" class="link" data-act="togglePass">Mostrar contraseña</button></p>'),
+    title: cfg.title, note: cfg.note, fields: cfg.fields, values: presetEmail ? { email: presetEmail } : {}, submitLabel: cfg.submit, focus: 'email',
+    extra: '<p id="formError" class="form-error" role="alert"></p>' + (mode === 'reset' ? '' : '<p style="margin:0 0 10px"><button type="button" class="link" data-act="togglePass">Mostrar contraseña</button>' + (mode === 'login' ? ' · <button type="button" class="link" data-act="syncForgot">¿Olvidaste tu contraseña?</button>' : '') + '</p>'),
     validate: d => mode === 'signup' ? (d.password.length < 6 ? 'La contraseña debe tener al menos 6 caracteres' : d.password !== d.password2 ? 'Las contraseñas no coinciden' : null) : null,
     onSubmit: async d => {
       const fe = $('#formError'); if (fe) fe.textContent = '';
       try {
         if (mode === 'login') await cloud.remote.signIn(d.email, d.password);
         else if (mode === 'signup') await cloud.remote.signUp(d.email, d.password);
-        else { await cloud.remote.resetPassword(d.email); toast('Listo: revisa tu correo (y la carpeta de spam)'); }
+        else { // no se revela si el correo tiene cuenta
+          try { await cloud.remote.resetPassword(String(d.email).trim()); } catch (e) { if (!e || e.code !== 'auth/user-not-found') throw e; }
+          toast('Si ese correo tiene una cuenta, te enviamos un enlace para elegir una contraseña nueva. Revisa también el spam.');
+        }
         return true;
       } catch (e) {
         const msg = authErr(e), code = (e && e.code) ? ` [${e.code}]` : '';
@@ -1848,6 +1851,11 @@ const actions = {
   syncLogin: () => openAuthForm('login'),
   syncSignup: () => openAuthForm('signup'),
   syncReset: () => openAuthForm('reset'),
+  syncForgot: () => { const f = document.getElementById('f_email'); openAuthForm('reset', f ? f.value : ''); },
+  syncChangePass: () => { if (!cloud.user || !cloud.remote) return; openForm({
+    title: 'Cambiar contraseña', note: `Te enviaremos un enlace a <b>${esc(cloud.user.email)}</b> para elegir una contraseña nueva. Después tendrás que volver a entrar con la nueva en tus otros dispositivos.`, fields: [], submitLabel: 'Enviar correo',
+    extra: '<p id="formError" class="form-error" role="alert"></p>',
+    onSubmit: async () => { try { await cloud.remote.resetPassword(cloud.user.email); toast('Listo: revisa tu correo (y el spam)'); return true; } catch (e) { const fe = $('#formError'); if (fe) fe.textContent = authErr(e); return false; } } }); },
   syncDot: () => { if (cloud.user) { if (cloud.engine) { cloud.engine.pushNow(); toast('Sincronizando…'); } } else location.hash = '#/ajustes'; },
   syncNow: () => { if (cloud.engine) { cloud.engine.pushNow(); toast('Sincronizando…'); } },
   syncLogout: () => { if (cloud.remote && confirm('¿Cerrar sesión? Tus datos seguirán en este dispositivo, pero dejarán de sincronizarse.\n\nSi después entras con OTRA cuenta, los datos de este dispositivo se combinarán con ella.')) cloud.remote.signOut(); },

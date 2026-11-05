@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Política de seguridad: solo se ejecuta código de esta app y de Firebase/Google; nada de scripts en línea ni eval. Si añades otro servicio externo, agrégalo aquí. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com https://www.google.com/recaptcha/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.googleapis.com https://*.firebaseapp.com; frame-src https://*.firebaseapp.com https://*.googleapis.com https://apis.google.com https://accounts.google.com https://www.google.com/recaptcha/ https://recaptcha.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="theme-color" content="#5B1A2B" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#240D15" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -16,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Inter:wght@300..700&display=swap">
-<link rel="stylesheet" href="styles.css?v=21">
+<link rel="stylesheet" href="styles.css?v=22">
 <title>Mis Finanzas</title>
 </head>
 <body>
@@ -25,8 +27,8 @@
   <main id="view" class="view"></main>
 </div>
 <div id="modal" class="modal hidden"></div>
-<script src="firebase-config.js?v=21"></script>
-<script src="sync.js?v=21"></script>
-<script src="app.js?v=21"></script>
+<script src="firebase-config.js?v=22"></script>
+<script src="sync.js?v=22"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

@@ -219,12 +219,17 @@
       this.m = { app, auth, fs };
       this.app = app.initializeApp(this.config);
       this.auth = auth.getAuth(this.app);
+      try { this.auth.languageCode = 'es'; } catch (e) { /* los correos de Firebase salen en español */ }
       this.db = fs.getFirestore(this.app);
     }
     onAuth(cb) { return this.m.auth.onAuthStateChanged(this.auth, u => cb(u ? { uid: u.uid, email: u.email } : null)); }
     signIn(email, password) { return this.m.auth.signInWithEmailAndPassword(this.auth, email, password); }
     signUp(email, password) { return this.m.auth.createUserWithEmailAndPassword(this.auth, email, password); }
-    resetPassword(email) { return this.m.auth.sendPasswordResetEmail(this.auth, email); }
+    async resetPassword(email) { // correo con enlace para elegir contraseña nueva (gratis); con "continuar" a la app y, si el dominio no lo admite, sin él
+      const send = this.m.auth.sendPasswordResetEmail;
+      try { await send(this.auth, email, { url: location.origin + location.pathname, handleCodeInApp: false }); }
+      catch (e) { if (e && /continue-uri/.test(String(e.code || ''))) await send(this.auth, email); else throw e; }
+    }
     signOut() { return this.m.auth.signOut(this.auth); }
     bind(uid) { this.col = this.m.fs.collection(this.db, 'users', uid, 'records'); }
     async push(ops) {
