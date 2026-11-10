@@ -1,0 +1,13 @@
+#!/bin/sh
+# Bloquea commits que contengan secretos. Activar una vez con:  git config core.hooksPath .githooks
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --config .gitleaks.toml || { echo "Commit bloqueado: posible secreto."; exit 1; }
+  exit 0
+fi
+echo "Aviso: gitleaks no esta instalado; uso un chequeo basico."
+# AIza solo se permite en firebase-config.js (apiKey web, no secreta)
+hits=$(git diff --cached -U0 -- . ':!firebase-config.js' ':!js/firebase-config.js' ':!.githooks' ':!.gitleaks.toml' ':!.github' | grep -E '^\+' | grep -E 'sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY|"private_key"')
+if [ -n "$hits" ]; then echo "Commit bloqueado: posible secreto en los cambios."; exit 1; fi
+files=$(git diff --cached --name-only | grep -Ei '(^|/)\.env|serviceaccount.*\.json|adminsdk.*\.json|\.pem$|\.key$')
+if [ -n "$files" ]; then echo "Commit bloqueado: archivo de credenciales: $files"; exit 1; fi
+exit 0

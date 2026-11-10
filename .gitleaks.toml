@@ -1,0 +1,12 @@
+title = "Reglas de escaneo de secretos"
+
+[extend]
+useDefault = true
+
+# Las apiKey web de Firebase (AIza...) NO son secretas: van en el navegador y las protegen
+# las reglas de Firestore, el inicio de sesión y las restricciones de la clave en Google Cloud.
+[[allowlists]]
+description = "apiKey web de Firebase en archivos de configuracion"
+paths = ['''(^|/)firebase-config\.js$''']
+regexTarget = "match"
+regexes = ['''AIza[0-9A-Za-z_\-]{35}''']

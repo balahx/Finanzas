@@ -1,0 +1,22 @@
+# Secretos y credenciales (nunca subir)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+serviceAccount*.json
+*-adminsdk-*.json
+firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
+.firebase/
+.runtimeconfig.json
+*.log
+
+# Sistema y herramientas
+node_modules/
+.DS_Store
+Thumbs.db
